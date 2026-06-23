@@ -1,0 +1,90 @@
+# ─────────────────────────────────────────────────────────────
+# Smart Healthcare Platform — Local Dev Stack
+# Owner: Ahmed Mostafa Mohamed
+#
+# Usage:
+#   docker compose up -d            # start everything
+#   docker compose logs -f app      # watch app logs
+#   docker compose down -v          # stop and wipe volumes
+# ─────────────────────────────────────────────────────────────
+
+version: '3.8'
+
+services:
+
+  # ── PostgreSQL ──────────────────────────────────────────────
+  db:
+    image: postgres:15-alpine
+    container_name: healthcare_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: healthcare_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: localpass
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # Auto-run schema on first startup
+      - ./database/schema_operational.sql:/docker-entrypoint-initdb.d/01_operational.sql
+      - ./database/schema_analytical.sql:/docker-entrypoint-initdb.d/02_analytical.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d healthcare_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── ETL + ML seeder (runs once, then exits) ─────────────────
+  seeder:
+    build: .
+    container_name: healthcare_seeder
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://postgres:localpass@db:5432/healthcare_db
+      N_PATIENTS: "100"
+      READINGS_PER_PATIENT: "48"
+    entrypoint: >
+      sh -c "
+        python database/init_db.py &&
+        python etl/pipeline.py &&
+        python ml/train_model.py &&
+        python ml/predict.py &&
+        echo '✅ Seeding complete'
+      "
+    volumes:
+      - ./ml/models:/app/ml/models
+    restart: "no"
+
+  # ── Streamlit Dashboard ──────────────────────────────────────
+  app:
+    build: .
+    container_name: healthcare_dashboard
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "8501:8501"
+    environment:
+      DATABASE_URL: postgresql://postgres:localpass@db:5432/healthcare_db
+    volumes:
+      - ./ml/models:/app/ml/models
+    command: ["streamlit", "run", "dashboard/app.py", "--server.port=8501", "--server.address=0.0.0.0"]
+
+  # ── Streaming simulator (optional — comment out if not needed) ──
+  streamer:
+    build: .
+    container_name: healthcare_streamer
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://postgres:localpass@db:5432/healthcare_db
+      STREAM_INTERVAL_SECONDS: "30"
+    entrypoint: ["python", "streaming/producer.py", "--interval", "30"]
+
+volumes:
+  pgdata:

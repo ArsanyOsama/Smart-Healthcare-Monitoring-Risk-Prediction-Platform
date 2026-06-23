@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.env
+.git
+Dockerfile
+docker-compose.yml
+ml/models/
+venv/
+env/
+*.log
