@@ -70,7 +70,7 @@ def load_vitals(df: pd.DataFrame, engine) -> int:
 
 def log_etl_run(engine, pipeline: str, status: str,
                 records_read: int, records_loaded: int,
-                duration_ms: int, error: str = None):
+                duration_ms: int, error: str | None = None):
     with engine.begin() as conn:
         conn.execute(text("""
             INSERT INTO etl_audit_log
