@@ -28,7 +28,15 @@ class AlertEngine:
             if value is None:
                 continue
 
-            alert = self._evaluate(patient_id, param, float(value), thresholds)
+            # --- SECURE TYPE CASTING BLOCK ---
+            try:
+                numeric_value = float(value)
+            except (ValueError, TypeError):
+                log.error(f"Malformed data received for patient {patient_id}, param {param}: {value}")
+                continue
+            # ---------------------------------
+
+            alert = self._evaluate(patient_id, param, numeric_value, thresholds)
             if alert and self._should_alert(patient_id, param):
                 self._insert_alert(alert)
                 triggered += 1

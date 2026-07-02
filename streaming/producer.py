@@ -25,13 +25,15 @@ def get_active_patient_ids(engine) -> list[str]:
                 text("SELECT patient_id FROM patients WHERE discharge_date IS NULL LIMIT 50")
             )
             return [row[0] for row in result]
-    except Exception:
-        # fallback to mock CSV if database is offline or during dry-run
+    except Exception as e:
+        # Log the actual database failure reason before switching to fallback
+        log.warning(f"Database connection failed ({e}). Switching to local fallbacks.")
+        
         import pandas as pd
         if os.path.exists('data/sample/patients.csv'):
             df = pd.read_csv('data/sample/patients.csv')
             return df['patient_id'].tolist()
-        return [f"PAT{str(i).zfill(4)}" for i in range(1, 6)] # extreme fallback
+        return [f"PAT{str(i).zfill(4)}" for i in range(1, 6)]
 
 def generate_reading(patient_id: str, t: int = 0) -> dict:
     return {
@@ -58,29 +60,36 @@ def stream_vitals(engine, interval: float = 30.0, dry_run: bool = False):
 
         if dry_run:
             log.info(f"[DRY RUN] Simulated {len(readings)} patient vitals successfully:")
-            # Print the data of the first 3 patients to see it live!
             for r in readings[:3]:
                 print(f"  → Patient: {r['patient_id']} | HR: {r['heart_rate']} | SpO2: {r['oxygen_saturation']}% | BP: {r['bp_systolic']}/{r['bp_diastolic']}")
             
             log.info("🚨 Testing Alert Engine with a simulated critical patient...")
-            # Force a dangerous SpO2 drop for the first patient to test your Alert Engine!
-            readings[0]['oxygen_saturation'] = 84.5
-            alert_engine.check_vitals(readings[0])
-            break
+            # Trigger a simulated failure on the first patient safely every cycle
+            if len(readings) > 0:
+                readings[0]['oxygen_saturation'] = 84.5
+                alert_engine.check_vitals(readings[0])
+            
+            # Instead of breaking, we sleep to allow continuous console telemetry testing
+            time.sleep(interval)
+            continue
 
-        # If NOT dry-run, write to real PostgreSQL database
-        with engine.begin() as conn:
-            conn.execute(text("""
-                INSERT INTO vital_signs
-                    (patient_id,timestamp,heart_rate,bp_systolic,bp_diastolic,
-                     temperature,oxygen_saturation,respiratory_rate)
-                VALUES
-                    (:patient_id,:timestamp,:heart_rate,:bp_systolic,:bp_diastolic,
-                     :temperature,:oxygen_saturation,:respiratory_rate)
-            """), readings)
+        # If NOT dry-run, write to real PostgreSQL database securely
+        try:
+            with engine.begin() as conn:
+                conn.execute(text("""
+                    INSERT INTO vital_signs
+                        (patient_id,timestamp,heart_rate,bp_systolic,bp_diastolic,
+                         temperature,oxygen_saturation,respiratory_rate)
+                    VALUES
+                        (:patient_id,:timestamp,:heart_rate,:bp_systolic,:bp_diastolic,
+                         :temperature,:oxygen_saturation,:respiratory_rate)
+                """), readings)
 
-        total_alerts = sum(alert_engine.check_vitals(r) for r in readings)
-        log.info(f"✅ Streamed {len(readings)} readings | Alerts triggered: {total_alerts}")
+            total_alerts = sum(alert_engine.check_vitals(r) for r in readings)
+            log.info(f"✅ Streamed {len(readings)} readings | Alerts triggered: {total_alerts}")
+        except Exception as db_err:
+            log.error(f"Failed to push batch streaming to database: {db_err}")
+
         time.sleep(interval)
 
 if __name__ == '__main__':
