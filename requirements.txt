@@ -1,9 +1,10 @@
 # requirements.txt — UNIFIED FINAL VERSION
+
 # Core Data Engineering
 pandas>=2.0.0
 numpy>=1.24.0
-sqlalchemy>=2.0.0
-psycopg2-binary>=2.9.0
+SQLAlchemy==2.0.27
+psycopg2-binary==2.9.9
 python-dotenv>=1.0.0
 
 # Data Generation
@@ -29,5 +30,3 @@ pytest-cov>=4.1.0
 # Utils
 tqdm>=4.66.0
 colorlog>=6.7.0
-psycopg2-binary==2.9.9
-SQLAlchemy==2.0.27
