@@ -1,8 +1,8 @@
 """
-Feature engineering: extracts ML-ready features from operational DB.
+ml/feature_engineering.py
+Builds ML feature matrix from the operational database.
 Owner: Ahmed Adel Abd ElAziz
 """
-
 import pandas as pd
 import numpy as np
 from sqlalchemy import text
@@ -11,27 +11,16 @@ import logging
 log = logging.getLogger('ml.features')
 
 FEATURE_COLS = [
-    # Patient demographics
-    'age', 'gender_m', 'bmi', 'diabetes', 'hypertension', 'smoking',
-    'comorbidity_count', 'age_group_encoded',
-    # Aggregated vitals (last 24h)
+    'age', 'gender_m', 'bmi',
+    'diabetes', 'hypertension', 'smoking', 'comorbidity_count', 'age_group_encoded',
     'avg_hr', 'avg_bp_sys', 'avg_bp_dia', 'avg_spo2', 'avg_rr', 'avg_temp',
-    # Extremes
-    'min_spo2', 'max_hr', 'min_bp_sys',
-    # Variability
-    'std_hr', 'std_bp_sys',
-    # Derived clinical indices
+    'min_spo2', 'max_hr', 'min_bp_sys', 'std_hr', 'std_bp_sys',
     'pulse_pressure', 'shock_index', 'resp_to_hr_ratio',
-    # Trend (last 6 readings vs first 6 readings)
-    'hr_trend', 'bp_trend', 'spo2_trend',
-    # Count (data coverage proxy)
-    'reading_count',
+    'hr_trend', 'bp_trend', 'spo2_trend', 'reading_count',
 ]
 
 
 def build_features(engine) -> pd.DataFrame:
-    """Build ML feature matrix from the operational database."""
-
     patients_sql = text("""
         SELECT patient_id, age, gender, bmi::float,
                diabetes::int, hypertension::int, smoking::int
@@ -60,11 +49,10 @@ def build_features(engine) -> pd.DataFrame:
             STDDEV(heart_rate)        AS std_hr,
             STDDEV(bp_systolic)       AS std_bp_sys,
             COUNT(*)                  AS reading_count,
-            -- Trend: recent avg minus early avg
-            AVG(heart_rate)        FILTER (WHERE rn_desc <= 6)
-            - AVG(heart_rate)      FILTER (WHERE rn_asc  <= 6) AS hr_trend,
-            AVG(bp_systolic)       FILTER (WHERE rn_desc <= 6)
-            - AVG(bp_systolic)     FILTER (WHERE rn_asc  <= 6) AS bp_trend,
+            AVG(heart_rate)    FILTER (WHERE rn_desc <= 6)
+            - AVG(heart_rate)  FILTER (WHERE rn_asc  <= 6) AS hr_trend,
+            AVG(bp_systolic)   FILTER (WHERE rn_desc <= 6)
+            - AVG(bp_systolic) FILTER (WHERE rn_asc  <= 6) AS bp_trend,
             AVG(oxygen_saturation) FILTER (WHERE rn_desc <= 6)
             - AVG(oxygen_saturation) FILTER (WHERE rn_asc <= 6) AS spo2_trend
         FROM numbered
@@ -76,30 +64,23 @@ def build_features(engine) -> pd.DataFrame:
         vit = pd.read_sql(vitals_sql, conn)
 
     df = pat.merge(vit, on='patient_id', how='left')
-
-    # Encode
     df['gender_m'] = (df['gender'] == 'M').astype(int)
     df['age_group_encoded'] = pd.cut(df['age'],
                                      bins=[0, 30, 45, 60, 75, 130], labels=[0, 1, 2, 3, 4]).astype(int)
     df['comorbidity_count'] = df['diabetes'] + \
         df['hypertension'] + df['smoking']
-
-    # Derived clinical indices
     df['pulse_pressure'] = df['avg_bp_sys'] - df['avg_bp_dia']
     df['shock_index'] = df['avg_hr'] / df['avg_bp_sys'].replace(0, np.nan)
     df['resp_to_hr_ratio'] = df['avg_rr'] / df['avg_hr'].replace(0, np.nan)
 
-    # Fill missing vitals with healthy defaults
-    defaults = {
-        'avg_hr': 75, 'avg_bp_sys': 120, 'avg_bp_dia': 75, 'avg_spo2': 97,
-        'avg_rr': 16, 'avg_temp': 36.8, 'min_spo2': 96, 'max_hr': 80,
-        'min_bp_sys': 110, 'std_hr': 5, 'std_bp_sys': 8,
-        'hr_trend': 0, 'bp_trend': 0, 'spo2_trend': 0,
-        'pulse_pressure': 45, 'shock_index': 0.63, 'resp_to_hr_ratio': 0.21,
-        'reading_count': 0
+    DEFAULTS = {
+        'avg_hr': 78, 'avg_bp_sys': 125, 'avg_bp_dia': 78, 'avg_spo2': 97,
+        'avg_rr': 16, 'avg_temp': 36.8, 'min_spo2': 96, 'max_hr': 90,
+        'min_bp_sys': 110, 'std_hr': 8, 'std_bp_sys': 12,
+        'hr_trend': 0, 'bp_trend': 0, 'spo2_trend': 0, 'reading_count': 0,
+        'pulse_pressure': 47, 'shock_index': 0.63, 'resp_to_hr_ratio': 0.21,
     }
-    df = df.fillna(defaults)
-
+    df = df.fillna(DEFAULTS)
     log.info(
         f"✅ Feature matrix: {len(df)} patients × {len(FEATURE_COLS)} features")
     return df

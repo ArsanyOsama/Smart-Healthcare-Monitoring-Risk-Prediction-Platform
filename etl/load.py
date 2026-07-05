@@ -17,6 +17,11 @@ def get_engine(db_url: str):
 
 
 def load_patients(df: pd.DataFrame, engine) -> int:
+    # Make blood_type optional — add null default if absent
+    df = df.copy()
+    if 'blood_type' not in df.columns:
+        df['blood_type'] = None
+
     cols = ['patient_id', 'full_name', 'age', 'gender', 'blood_type',
             'admission_date', 'ward', 'diabetes', 'hypertension', 'smoking', 'bmi']
     df_load = df[cols].copy()
@@ -30,16 +35,15 @@ def load_patients(df: pd.DataFrame, engine) -> int:
             batch = df_load.iloc[i:i + BATCH_SIZE]
             conn.execute(text("""
                 INSERT INTO patients
-                    (patient_id,full_name,age,gender,blood_type,
-                     admission_date,ward,diabetes,hypertension,smoking,bmi)
+                    (patient_id, full_name, age, gender, blood_type,
+                     admission_date, ward, diabetes, hypertension, smoking, bmi)
                 VALUES
-                    (:patient_id,:full_name,:age,:gender,:blood_type,
-                     :admission_date,:ward,:diabetes,:hypertension,:smoking,:bmi)
+                    (:patient_id, :full_name, :age, :gender, :blood_type,
+                     :admission_date, :ward, :diabetes, :hypertension, :smoking, :bmi)
                 ON CONFLICT (patient_id) DO NOTHING
             """), batch.to_dict(orient='records'))
             inserted += len(batch)
-            log.debug(f"Patients batch {i//BATCH_SIZE + 1} inserted")
-
+            log.debug(f"Patients batch {i // BATCH_SIZE + 1} inserted")
     log.info(f"✅ Loaded {inserted} patient records")
     return inserted
 

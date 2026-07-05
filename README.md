@@ -96,3 +96,17 @@ It integrates:
 ```bash
 git clone https://github.com/ArsanyOsama/Smart-Healthcare-Monitoring-Risk-Prediction-Platform.git
 cd Smart-Healthcare-Monitoring-Risk-Prediction-Platform
+
+## Quick Start
+```bash
+git clone https://github.com/ArsanyOsama/Smart-Healthcare-Monitoring-Risk-Prediction-Platform.git
+cd Smart-Healthcare-Monitoring-Risk-Prediction-Platform
+python -m venv venv && source venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env          # edit with your PostgreSQL credentials
+python database/init_db.py
+python data/generate_mock.py  # generate 1000 patients + 48K vitals
+python etl/pipeline.py
+python ml/train_model.py
+python ml/predict.py
+streamlit run dashboard/app.py

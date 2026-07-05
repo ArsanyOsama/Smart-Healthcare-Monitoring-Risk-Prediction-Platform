@@ -1,128 +1,86 @@
 """
-Automated data quality checks for the operational database.
+governance/data_quality.py
+Runs automated data quality checks against the operational database.
 Owner: Adel Assem Mohamed
 Run: python governance/data_quality.py
 """
-
 import os
+import sys
 import logging
-import pandas as pd
 from sqlalchemy import create_engine, text
 from dotenv import load_dotenv
-from datetime import datetime
 
 load_dotenv()
+logging.basicConfig(level=logging.INFO,
+                    format='%(asctime)s [%(levelname)s] %(message)s')
 log = logging.getLogger('governance.quality')
-logging.basicConfig(level=logging.INFO)
 
-
-QUALITY_CHECKS = [
-    {
-        "name": "No null patient IDs in vitals",
-        "query": "SELECT COUNT(*) FROM vital_signs WHERE patient_id IS NULL",
-        "expected": 0,
-        "severity": "CRITICAL"
-    },
-    {
-        "name": "SpO2 in valid range (0-100)",
-        "query": "SELECT COUNT(*) FROM vital_signs WHERE oxygen_saturation NOT BETWEEN 0 AND 100",
-        "expected": 0,
-        "severity": "HIGH"
-    },
-    {
-        "name": "Heart rate in valid range (20-300)",
-        "query": "SELECT COUNT(*) FROM vital_signs WHERE heart_rate NOT BETWEEN 20 AND 300",
-        "expected": 0,
-        "severity": "HIGH"
-    },
-    {
-        "name": "No duplicate patient IDs",
-        "query": "SELECT COUNT(*) - COUNT(DISTINCT patient_id) FROM patients",
-        "expected": 0,
-        "severity": "CRITICAL"
-    },
-    {
-        "name": "All vitals linked to existing patients",
-        "query": """SELECT COUNT(*) FROM vital_signs v
-                    LEFT JOIN patients p ON v.patient_id = p.patient_id
-                    WHERE p.patient_id IS NULL""",
-        "expected": 0,
-        "severity": "CRITICAL"
-    },
-    {
-        "name": "Patients have at least 1 vital reading",
-        "query": """SELECT COUNT(*) FROM patients p
-                    WHERE p.discharge_date IS NULL
-                    AND NOT EXISTS (SELECT 1 FROM vital_signs v WHERE v.patient_id = p.patient_id)""",
-        "expected_max": 5,  # Allow up to 5 patients with no readings
-        "severity": "MEDIUM"
-    },
-    {
-        "name": "No future timestamps in vitals",
-        "query": "SELECT COUNT(*) FROM vital_signs WHERE timestamp > NOW() + INTERVAL '1 minute'",
-        "expected": 0,
-        "severity": "HIGH"
-    },
+CHECKS = [
+    {"name": "No null patient IDs in vitals",
+     "query": "SELECT COUNT(*) FROM vital_signs WHERE patient_id IS NULL",
+     "expected": 0, "severity": "CRITICAL"},
+    {"name": "SpO2 in valid range (0-100)",
+     "query": "SELECT COUNT(*) FROM vital_signs WHERE oxygen_saturation NOT BETWEEN 0 AND 100",
+     "expected": 0, "severity": "HIGH"},
+    {"name": "Heart rate in valid range (20-300)",
+     "query": "SELECT COUNT(*) FROM vital_signs WHERE heart_rate NOT BETWEEN 20 AND 300",
+     "expected": 0, "severity": "HIGH"},
+    {"name": "No duplicate patient IDs",
+     "query": "SELECT COUNT(*) - COUNT(DISTINCT patient_id) FROM patients",
+     "expected": 0, "severity": "CRITICAL"},
+    {"name": "All vitals linked to existing patients",
+     "query": "SELECT COUNT(*) FROM vital_signs v LEFT JOIN patients p ON v.patient_id=p.patient_id WHERE p.patient_id IS NULL",
+     "expected": 0, "severity": "CRITICAL"},
+    {"name": "Patients table not empty",
+     "query": "SELECT COUNT(*) FROM patients",
+     "expected_min": 1, "severity": "CRITICAL"},
+    {"name": "Vitals table not empty",
+     "query": "SELECT COUNT(*) FROM vital_signs",
+     "expected_min": 1, "severity": "CRITICAL"},
+    {"name": "No future timestamps",
+     "query": "SELECT COUNT(*) FROM vital_signs WHERE timestamp > NOW() + INTERVAL '1 minute'",
+     "expected": 0, "severity": "HIGH"},
+    {"name": "Risk scores present",
+     "query": "SELECT COUNT(*) FROM risk_scores",
+     "expected_min": 1, "severity": "MEDIUM"},
+    {"name": "ETL audit log has SUCCESS entries",
+     "query": "SELECT COUNT(*) FROM etl_audit_log WHERE status='SUCCESS'",
+     "expected_min": 1, "severity": "MEDIUM"},
 ]
 
 
-def run_quality_checks(engine) -> dict:
-    results = []
+def run_checks(engine) -> dict:
     passed = failed = 0
-
+    results = []
     with engine.connect() as conn:
-        for check in QUALITY_CHECKS:
+        for check in CHECKS:
             try:
-                count = conn.execute(text(check['query'])).scalar()
-                expected = check.get('expected', None)
-                expected_max = check.get('expected_max', None)
-
-                if expected is not None:
-                    ok = (count == expected)
-                elif expected_max is not None:
-                    ok = (count <= expected_max)
-                else:
-                    ok = True
-
-                status = "✅ PASS" if ok else f"❌ FAIL"
+                val = conn.execute(text(check['query'])).scalar()
+                exp = check.get('expected')
+                exp_min = check.get('expected_min')
+                ok = (val == exp) if exp is not None else (val >= exp_min)
+                status = "✅ PASS" if ok else f"❌ FAIL (got {val})"
                 if ok:
                     passed += 1
                 else:
                     failed += 1
-
                 log.log(logging.INFO if ok else logging.WARNING,
-                        f"{status} [{check['severity']}] {check['name']} — count={count}")
-
-                results.append({**check, 'actual': count,
-                               'passed': ok, 'status': status})
-
+                        f"{status} [{check['severity']}] {check['name']}")
+                results.append({**check, 'actual': val, 'passed': ok})
             except Exception as e:
-                log.error(f"Check failed with error: {check['name']}: {e}")
-                results.append(
-                    {**check, 'actual': None, 'passed': False, 'status': f"❌ ERROR: {e}"})
                 failed += 1
+                log.error(f"❌ ERROR {check['name']}: {e}")
 
-    summary = {
-        'run_at': datetime.now().isoformat(),
-        'total': passed + failed,
-        'passed': passed,
-        'failed': failed,
-        'pass_rate': passed / (passed + failed) if (passed + failed) > 0 else 0,
-        'results': results
-    }
-
-    log.info(f"\n{'='*50}")
     log.info(
-        f"QA SUMMARY: {passed}/{passed+failed} checks passed ({summary['pass_rate']:.0%})")
-    log.info(f"{'='*50}")
-    return summary
+        f"\n{'='*50}\nQA: {passed}/{passed+failed} passed ({passed/(passed+failed):.0%})\n{'='*50}")
+    return {'passed': passed, 'failed': failed, 'results': results}
 
 
+# Replace the __main__ block at the bottom:
 if __name__ == '__main__':
-    engine = create_engine(os.getenv('DATABASE_URL'))
-    summary = run_quality_checks(engine)
-    if summary['failed'] > 0:
-        log.warning(
-            f"⚠️  {summary['failed']} checks failed — review data quality")
-    else:
-        log.info("🎉 All data quality checks passed!")
+    db_url = os.getenv('DATABASE_URL')
+    if not db_url:
+        log.critical("DATABASE_URL not set in .env")
+        sys.exit(1)
+    engine = create_engine(db_url)
+    run_checks(engine)

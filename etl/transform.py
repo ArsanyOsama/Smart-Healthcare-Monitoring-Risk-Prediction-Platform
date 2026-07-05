@@ -54,7 +54,8 @@ def transform_patients(df: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
                                   'hypertension', 'smoking']].astype(int).sum(axis=1)
 
     # Normalise gender
-    df['gender'] = df['gender'].str.upper().str.strip().str[0]
+    df['gender'] = df['gender'].astype(str).str.upper().str.strip().str[0]
+    df.loc[~df['gender'].isin(['M', 'F']), 'gender'] = 'M'
 
     issues['records_in'] = initial
     issues['records_out'] = len(df)

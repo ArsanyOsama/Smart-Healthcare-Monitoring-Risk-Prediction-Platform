@@ -63,31 +63,48 @@ st.markdown("""
 @st.cache_resource(show_spinner=False)
 def get_engine():
     try:
-        url = (st.secrets.get("supabase", {}).get("db_url")
-               or os.getenv("DATABASE_URL", ""))
+        url = None
+
+        # 1. Try Streamlit Secrets (for production or local TOML)
+        if hasattr(st, "secrets"):
+            url = st.secrets.get("db_url") or st.secrets.get("SUPABASE_DB_URL")
+
+        # 2. Fallback to Environment Variables (from .env)
         if not url:
-            st.error(
-                "⚠️ No DATABASE_URL found. Set it in .env or Streamlit secrets.")
+            url = os.getenv("SUPABASE_DB_URL") or os.getenv("DATABASE_URL")
+
+        if not url:
+            st.error("⚠️ No DATABASE_URL found. Please check secrets.toml or .env")
             st.stop()
+
         return create_engine(url, pool_pre_ping=True)
     except Exception as e:
         st.error(f"DB connection failed: {e}")
         st.stop()
 
-
 # ─── Data Loaders ────────────────────────────────────────────
+
+
 @st.cache_data(ttl=30, show_spinner=False)
 def load_kpi_stats(_engine):
     q = text("""
         SELECT
-            (SELECT COUNT(*) FROM patients WHERE discharge_date IS NULL)       AS total_patients,
-            (SELECT COUNT(*) FROM alerts WHERE is_active = TRUE)               AS active_alerts,
-            (SELECT COUNT(*) FROM alerts WHERE is_active AND severity='CRITICAL') AS critical_alerts,
-            (SELECT COUNT(DISTINCT patient_id) FROM risk_scores rs
-             WHERE risk_level IN ('HIGH','CRITICAL')
-               AND calculated_at = (SELECT MAX(c) FROM risk_scores r2
-                                    WHERE r2.patient_id = rs.patient_id
-                                    GROUP BY r2.patient_id)) AS high_risk_patients
+            (SELECT COUNT(*) FROM patients WHERE discharge_date IS NULL)
+                AS total_patients,
+            (SELECT COUNT(*) FROM alerts WHERE is_active = TRUE)
+                AS active_alerts,
+            (SELECT COUNT(*) FROM alerts
+             WHERE is_active = TRUE AND severity = 'CRITICAL')
+                AS critical_alerts,
+            (SELECT COUNT(DISTINCT rs.patient_id)
+             FROM risk_scores rs
+             INNER JOIN (
+                 SELECT patient_id, MAX(calculated_at) AS latest_calc
+                 FROM risk_scores GROUP BY patient_id
+             ) lat ON rs.patient_id = lat.patient_id
+                  AND rs.calculated_at = lat.latest_calc
+             WHERE rs.risk_level IN ('HIGH','CRITICAL'))
+                AS high_risk_patients
     """)
     with _engine.connect() as conn:
         row = conn.execute(q).fetchone()
@@ -209,13 +226,24 @@ def page_patient_monitor(engine):
         st.warning("No patient data found.")
         return
 
-    patient_id = st.selectbox("Select Patient",
-                              risk_df['patient_id'].tolist(),
-                              format_func=lambda pid: (
-                                  f"{pid} — {risk_df.loc[risk_df['patient_id']==pid,'full_name'].values[0]}"
-                              ))
-    hours = st.slider("Time Window (hours)", 1, 48, 24)
+    # Dict lookup removes pandas Series ambiguity
+    name_lookup = dict(zip(risk_df['patient_id'], risk_df['full_name']))
 
+    def _fmt(pid: str) -> str:
+        name = name_lookup.get(pid)
+        return f"{pid} — {name}" if pd.notnull(name) else f"{pid} — Patient"
+
+    patient_id = st.selectbox(
+        "Select Patient",
+        risk_df['patient_id'].tolist(),
+        format_func=_fmt
+    )
+
+    if not patient_id:
+        st.info("No patient selected.")
+        return
+
+    hours = st.slider("Time Window (hours)", 1, 48, 24)
     vitals = load_vitals_for_patient(engine, patient_id, hours)
 
     if vitals.empty:
@@ -224,7 +252,6 @@ def page_patient_monitor(engine):
 
     vitals['timestamp'] = pd.to_datetime(vitals['timestamp'])
 
-    # Vital charts
     for param, label, color, lo, hi in [
         ('heart_rate',        '❤️ Heart Rate (bpm)',      '#e74c3c', 50, 120),
         ('oxygen_saturation', '💨 SpO₂ (%)',              '#3498db', 93, 100),
@@ -292,7 +319,6 @@ def page_ml_insights(engine):
         with c4:
             st.metric("Accuracy",  f"{metrics.get('test_accuracy', 0):.1%}")
 
-        # Feature importance bar chart
         if 'feature_importance' in metrics:
             fi = metrics['feature_importance']
             fig = px.bar(

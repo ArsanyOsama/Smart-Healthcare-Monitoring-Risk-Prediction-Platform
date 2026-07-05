@@ -21,8 +21,9 @@ THRESHOLDS = {
 
 
 class AlertEngine:
-    def __init__(self, db_engine):
+    def __init__(self, db_engine, dry_run: bool = False):
         self.engine = db_engine
+        self.dry_run = dry_run
         self._alert_cooldown = {}  # patient_id+param → last_alert_time, to avoid spam
 
     def check_vitals(self, reading: dict) -> int:
@@ -80,6 +81,9 @@ class AlertEngine:
         return (datetime.now() - last).total_seconds() > cooldown_minutes * 60
 
     def _insert_alert(self, alert: dict):
+        if self.dry_run:
+            log.info(f"🔧 [DRY-RUN] Would insert alert: {alert['message']}")
+            return
         try:
             with self.engine.begin() as conn:
                 conn.execute(text("""

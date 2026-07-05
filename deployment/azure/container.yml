@@ -1,0 +1,31 @@
+# deployment/azure/container.yml
+# Azure Container Instances ARM template (alternative to deploy.sh)
+apiVersion: 2021-10-01
+location: germanywestcentral
+name: healthcare-dashboard
+properties:
+  containers:
+    - name: healthcare-dashboard
+      properties:
+        image: depihealthcarecr.azurecr.io/healthcare-dashboard:latest
+        resources:
+          requests:
+            cpu: 1
+            memoryInGb: 1.5
+        ports:
+          - port: 8501
+            protocol: TCP
+        environmentVariables:
+          - name: DATABASE_URL
+            secureValue: <your-db-url>
+  osType: Linux
+  ipAddress:
+    type: Public
+    ports:
+      - protocol: TCP
+        port: 8501
+    dnsNameLabel: healthcare-depi-demo
+  imageRegistryCredentials:
+    - server: depihealthcarecr.azurecr.io
+      username: <acr-username>
+      password: <acr-password>

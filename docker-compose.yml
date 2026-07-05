@@ -43,7 +43,7 @@ services:
         condition: service_healthy
     environment:
       DATABASE_URL: postgresql://postgres:localpass@db:5432/healthcare_db
-      N_PATIENTS: "100"
+      N_PATIENTS: "1000"
       READINGS_PER_PATIENT: "48"
     entrypoint: >
       sh -c "

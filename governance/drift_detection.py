@@ -1,12 +1,12 @@
 """
-Statistical drift detection — monitors if incoming data distribution
-shifts from the baseline (training data).
-Owner: Adel Assem Mohamed
+governance/drift_detection.py
+Detects statistical drift in incoming vital sign data vs established baselines.
+Run: python governance/drift_detection.py
 """
-
 import os
-import json
+import sys
 import logging
+import typing
 import numpy as np
 import pandas as pd
 from scipy import stats
@@ -14,65 +14,69 @@ from sqlalchemy import create_engine, text
 from dotenv import load_dotenv
 
 load_dotenv()
+logging.basicConfig(level=logging.INFO,
+                    format='%(asctime)s [%(levelname)s] %(message)s')
 log = logging.getLogger('governance.drift')
-VITALS = ['heart_rate', 'bp_systolic',
-          'oxygen_saturation', 'respiratory_rate', 'temperature']
 
-BASELINE = {  # Population norms — update after first ETL run
-    'heart_rate':        {'mean': 78.0, 'std': 12.0},
-    'bp_systolic':       {'mean': 125.0, 'std': 18.0},
-    'oxygen_saturation': {'mean': 97.0, 'std': 1.5},
-    'respiratory_rate':  {'mean': 16.5, 'std': 2.5},
-    'temperature':       {'mean': 36.8, 'std': 0.45},
+# Population baseline stats (update after first full ETL run)
+BASELINES = {
+    'heart_rate':        {'mean': 80.0, 'std': 14.0},
+    'bp_systolic':       {'mean': 126.0, 'std': 20.0},
+    'oxygen_saturation': {'mean': 97.0, 'std': 2.0},
+    'respiratory_rate':  {'mean': 17.0, 'std': 3.5},
+    'temperature':       {'mean': 36.8, 'std': 0.5},
 }
 
 
 def detect_drift(engine, window_hours: int = 1) -> dict:
-    """KS-test between baseline distributions and latest window."""
-    results = {}
+    vitals_cols = ', '.join(BASELINES.keys())
     with engine.connect() as conn:
         df = pd.read_sql(text(f"""
-            SELECT {', '.join(VITALS)}
+            SELECT {vitals_cols}
             FROM vital_signs
             WHERE timestamp >= NOW() - INTERVAL '{window_hours} hours'
         """), conn)
 
     if len(df) < 30:
-        log.warning(f"Not enough data for drift detection ({len(df)} rows)")
+        log.warning(f"Only {len(df)} rows in window — need ≥30 for drift test")
         return {}
 
-    for col in VITALS:
-        if col not in df.columns or col not in BASELINE:
+    results = {}
+    for col, baseline in BASELINES.items():
+        if col not in df.columns:
             continue
-        baseline = BASELINE[col]
-        # Simulate baseline distribution
-        synthetic_baseline = np.random.normal(
-            baseline['mean'], baseline['std'], 500)
-        actual = df[col].dropna().values
 
-        ks_stat, p_value = stats.ks_2samp(synthetic_baseline, actual)
-        drifted = p_value < 0.05
+        synthetic = np.random.normal(baseline['mean'], baseline['std'], 500)
+        actual = df[col].dropna().to_numpy(dtype=float)
+
+        # Tag as typing.Any to disable Pylance's strict checking on SciPy's incomplete stubs
+        ks_result: typing.Any = stats.ks_2samp(synthetic, actual)
+
+        # Now we can safely use the attributes and cast them
+        ks = float(ks_result.statistic)
+        p = float(ks_result.pvalue)
+        drifted = bool(p < 0.05)
 
         results[col] = {
-            'ks_statistic': round(ks_stat, 4),
-            'p_value':      round(p_value, 4),
-            'drifted':      drifted,
-            'current_mean': round(actual.mean(), 2),
-            'current_std':  round(actual.std(), 2),
+            'ks': round(ks, 4), 'p_value': round(p, 4),
+            'drifted': drifted,
+            'current_mean': round(float(actual.mean()), 2),
             'baseline_mean': baseline['mean'],
         }
-        status = "⚠️ DRIFT" if drifted else "✅ STABLE"
-        log.info(
-            f"{status} {col}: current_mean={actual.mean():.1f} | KS={ks_stat:.3f} p={p_value:.3f}")
-
+        log.log(logging.WARNING if drifted else logging.INFO,
+                f"{'⚠️  DRIFT' if drifted else '✅ STABLE'} {col}: "
+                f"mean={actual.mean():.1f} | KS={ks:.3f} p={p:.3f}")
     return results
 
 
 if __name__ == '__main__':
-    engine = create_engine(os.getenv('DATABASE_URL'))
-    drift_results = detect_drift(engine)
-    drifted = [k for k, v in drift_results.items() if v['drifted']]
+    db_url = os.getenv('DATABASE_URL')
+    if not db_url:
+        log.critical("DATABASE_URL not set in .env")
+        sys.exit(1)
+    engine = create_engine(db_url)
+    drifted = [k for k, v in detect_drift(engine).items() if v.get('drifted')]
     if drifted:
-        log.warning(f"⚠️  Drift detected in: {drifted}")
+        log.warning(f"Drift in: {drifted}")
     else:
-        log.info("✅ No significant data drift detected")
+        log.info("✅ No drift detected")

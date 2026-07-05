@@ -7,8 +7,6 @@ Run: python streaming/producer.py
 """
 
 from streaming.alert_engine import AlertEngine
-import threading
-import queue
 import time
 import random
 import os
@@ -29,11 +27,21 @@ logging.basicConfig(level=logging.INFO,
 
 
 def get_active_patient_ids(engine) -> list[str]:
-    with engine.connect() as conn:
-        result = conn.execute(
-            text("SELECT patient_id FROM patients WHERE discharge_date IS NULL LIMIT 50")
-        )
-        return [row[0] for row in result]
+    try:
+        with engine.connect() as conn:
+            result = conn.execute(
+                text(
+                    "SELECT patient_id FROM patients WHERE discharge_date IS NULL LIMIT 50")
+            )
+            return [row[0] for row in result]
+    except Exception:
+        # fallback to mock CSV if database is offline or during dry-run
+        import pandas as pd
+        if os.path.exists('data/sample/patients.csv'):
+            df = pd.read_csv('data/sample/patients.csv')
+            return df['patient_id'].tolist()
+        # extreme fallback
+        return [f"PAT{str(i).zfill(4)}" for i in range(1, 6)]
 
 
 def generate_reading(patient_id: str, t: int = 0) -> dict:
@@ -91,5 +99,9 @@ if __name__ == '__main__':
     parser.add_argument('--dry-run', action='store_true')
     args = parser.parse_args()
 
-    engine = create_engine(os.getenv('DATABASE_URL'))
+    db_url = os.getenv('DATABASE_URL')
+    if not db_url:
+        log.critical("❌ DATABASE_URL not set in .env")
+        sys.exit(1)
+    engine = create_engine(db_url, pool_pre_ping=True)
     stream_vitals(engine, args.interval, args.dry_run)
