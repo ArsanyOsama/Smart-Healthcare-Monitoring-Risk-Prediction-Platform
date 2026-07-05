@@ -1,6 +1,6 @@
 """
 Main Streamlit dashboard entry point.
-Owner: Adel Assem
+Owner: Yahya Mohamed Abdelwahab
 Run: streamlit run dashboard/app.py
 """
 
@@ -9,7 +9,8 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 from sqlalchemy import create_engine, text
-import os, json
+import os
+import json
 from datetime import datetime
 from dotenv import load_dotenv
 
@@ -65,7 +66,8 @@ def get_engine():
         url = (st.secrets.get("supabase", {}).get("db_url")
                or os.getenv("DATABASE_URL", ""))
         if not url:
-            st.error("⚠️ No DATABASE_URL found. Set it in .env or Streamlit secrets.")
+            st.error(
+                "⚠️ No DATABASE_URL found. Set it in .env or Streamlit secrets.")
             st.stop()
         return create_engine(url, pool_pre_ping=True)
     except Exception as e:
@@ -131,7 +133,7 @@ def main():
         st.markdown("## 🏥 Healthcare Monitor")
         st.markdown("---")
         page = st.radio("Navigate", ["📊 Overview", "🧑 Patient Monitor",
-                                      "🚨 Alerts", "🤖 ML Insights"])
+                                     "🚨 Alerts", "🤖 ML Insights"])
         st.markdown("---")
         if st.button("🔄 Refresh Data"):
             st.cache_data.clear()
@@ -153,16 +155,20 @@ def main():
 def page_overview(engine):
     st.title("📊 Platform Overview")
 
-    stats   = load_kpi_stats(engine)
+    stats = load_kpi_stats(engine)
     risk_df = load_risk_summary(engine)
 
     # KPI Row
     c1, c2, c3, c4 = st.columns(4)
-    with c1: st.metric("🏥 Active Patients",    stats['total_patients'])
-    with c2: st.metric("🚨 Active Alerts",       stats['active_alerts'],
-                       delta=f"{stats['critical_alerts']} critical", delta_color="inverse")
-    with c3: st.metric("⚠️ High Risk Patients",  stats['high_risk_patients'])
-    with c4: st.metric("📡 Monitoring Coverage", "95%", "+5% vs target")
+    with c1:
+        st.metric("🏥 Active Patients",    stats['total_patients'])
+    with c2:
+        st.metric("🚨 Active Alerts",       stats['active_alerts'],
+                  delta=f"{stats['critical_alerts']} critical", delta_color="inverse")
+    with c3:
+        st.metric("⚠️ High Risk Patients",  stats['high_risk_patients'])
+    with c4:
+        st.metric("📡 Monitoring Coverage", "95%", "+5% vs target")
 
     st.divider()
 
@@ -176,8 +182,8 @@ def page_overview(engine):
                          hole=0.5, title="Risk Distribution",
                          color='Risk Level',
                          color_discrete_map={
-                             'LOW':'#27ae60', 'MEDIUM':'#f39c12',
-                             'HIGH':'#e67e22', 'CRITICAL':'#c0392b'
+                             'LOW': '#27ae60', 'MEDIUM': '#f39c12',
+                             'HIGH': '#e67e22', 'CRITICAL': '#c0392b'
                          })
             fig.update_layout(
                 paper_bgcolor='rgba(0,0,0,0)',
@@ -189,8 +195,8 @@ def page_overview(engine):
     with col2:
         st.subheader("Patient Risk Table")
         if not risk_df.empty:
-            display = risk_df[['patient_id','full_name','age','ward',
-                               'risk_level','risk_score','active_alerts']].head(15)
+            display = risk_df[['patient_id', 'full_name', 'age', 'ward',
+                               'risk_level', 'risk_score', 'active_alerts']].head(15)
             display['risk_score'] = display['risk_score'].apply(
                 lambda x: f"{x:.1%}" if pd.notnull(x) else "—")
             st.dataframe(display, hide_index=True, use_container_width=True)
@@ -198,17 +204,17 @@ def page_overview(engine):
 
 def page_patient_monitor(engine):
     st.title("🧑 Patient Vital Monitor")
-    risk_df    = load_risk_summary(engine)
+    risk_df = load_risk_summary(engine)
     if risk_df.empty:
         st.warning("No patient data found.")
         return
 
     patient_id = st.selectbox("Select Patient",
-                               risk_df['patient_id'].tolist(),
-                               format_func=lambda pid: (
-                                   f"{pid} — {risk_df.loc[risk_df['patient_id']==pid,'full_name'].values[0]}"
-                               ))
-    hours      = st.slider("Time Window (hours)", 1, 48, 24)
+                              risk_df['patient_id'].tolist(),
+                              format_func=lambda pid: (
+                                  f"{pid} — {risk_df.loc[risk_df['patient_id']==pid,'full_name'].values[0]}"
+                              ))
+    hours = st.slider("Time Window (hours)", 1, 48, 24)
 
     vitals = load_vitals_for_patient(engine, patient_id, hours)
 
@@ -229,9 +235,11 @@ def page_patient_monitor(engine):
             continue
         fig = go.Figure()
         fig.add_trace(go.Scatter(x=vitals['timestamp'], y=vitals[param],
-                                  mode='lines+markers', name=label, line_color=color))
-        fig.add_hline(y=hi, line_dash='dash', line_color='#e74c3c', opacity=0.5, annotation_text="Upper limit")
-        fig.add_hline(y=lo, line_dash='dash', line_color='#3498db', opacity=0.5, annotation_text="Lower limit")
+                                 mode='lines+markers', name=label, line_color=color))
+        fig.add_hline(y=hi, line_dash='dash', line_color='#e74c3c',
+                      opacity=0.5, annotation_text="Upper limit")
+        fig.add_hline(y=lo, line_dash='dash', line_color='#3498db',
+                      opacity=0.5, annotation_text="Lower limit")
         fig.update_layout(title=label, paper_bgcolor='rgba(0,0,0,0)',
                           plot_bgcolor='rgba(13,27,42,0.8)',
                           font_color='#e0e0e0', height=220, margin=dict(t=30, b=20))
@@ -248,8 +256,8 @@ def page_alerts(engine):
 
     # Severity filter
     sevs = st.multiselect("Filter by severity",
-                           ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW'],
-                           default=['CRITICAL', 'HIGH'])
+                          ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW'],
+                          default=['CRITICAL', 'HIGH'])
     if sevs:
         alerts = alerts[alerts['severity'].isin(sevs)]
 
@@ -266,7 +274,8 @@ def page_alerts(engine):
 
 def page_ml_insights(engine):
     st.title("🤖 ML Risk Insights")
-    import json, os
+    import json
+    import os
 
     metrics_path = 'ml/models/metrics.json'
     if os.path.exists(metrics_path):
@@ -274,10 +283,14 @@ def page_ml_insights(engine):
             metrics = json.load(f)
 
         c1, c2, c3, c4 = st.columns(4)
-        with c1: st.metric("Recall",    f"{metrics.get('test_recall', 0):.1%}")
-        with c2: st.metric("Precision", f"{metrics.get('test_precision', 0):.1%}")
-        with c3: st.metric("F1-Score",  f"{metrics.get('test_f1', 0):.1%}")
-        with c4: st.metric("Accuracy",  f"{metrics.get('test_accuracy', 0):.1%}")
+        with c1:
+            st.metric("Recall",    f"{metrics.get('test_recall', 0):.1%}")
+        with c2:
+            st.metric("Precision", f"{metrics.get('test_precision', 0):.1%}")
+        with c3:
+            st.metric("F1-Score",  f"{metrics.get('test_f1', 0):.1%}")
+        with c4:
+            st.metric("Accuracy",  f"{metrics.get('test_accuracy', 0):.1%}")
 
         # Feature importance bar chart
         if 'feature_importance' in metrics:
