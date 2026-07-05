@@ -9,9 +9,9 @@ import os
 import sys
 import pickle
 import logging
+import json
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
-import json
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
@@ -37,8 +37,20 @@ def predict_and_store(db_url: str, model_path: str = MODEL_PATH):
     version = payload.get('version', 'v2.0')
     feat_imp = json.dumps(payload.get('feature_importance', {}))
 
-    engine = create_engine(db_url, pool_pre_ping=True)
+    # ARCHITECTURE FIX 1: Strict connection pooling to prevent DB exhaustion in production
+    engine = create_engine(
+        db_url,
+        pool_size=5,
+        max_overflow=10,
+        pool_timeout=30,
+        pool_pre_ping=True
+    )
+
     df = build_features(engine)
+
+    if df.empty:
+        log.info("No patient data found for inference.")
+        return
 
     X = df[FEATURE_COLS].copy()
     for col in ['diabetes', 'hypertension', 'smoking']:
@@ -69,14 +81,18 @@ def predict_and_store(db_url: str, model_path: str = MODEL_PATH):
             'feature_importances': feat_imp,
         })
 
+    # ARCHITECTURE FIX 2: Chunking the database inserts to prevent OOM / Timeout crashes
+    chunk_size = 500
     with engine.begin() as conn:
-        conn.execute(text("""
-            INSERT INTO risk_scores
-                (patient_id, risk_score, risk_level, model_version, feature_importances)
-            VALUES
-                (:patient_id, :risk_score, :risk_level, :model_version,
-                 :feature_importances::jsonb)
-        """), rows)
+        for i in range(0, len(rows), chunk_size):
+            chunk = rows[i:i + chunk_size]
+            conn.execute(text("""
+                INSERT INTO risk_scores
+                    (patient_id, risk_score, risk_level, model_version, feature_importances)
+                VALUES
+                    (:patient_id, :risk_score, :risk_level, :model_version,
+                     :feature_importances::jsonb)
+            """), chunk)
 
     critical = sum(1 for r in rows if r['risk_level'] == 'CRITICAL')
     high = sum(1 for r in rows if r['risk_level'] == 'HIGH')

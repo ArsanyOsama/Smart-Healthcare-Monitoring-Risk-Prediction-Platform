@@ -77,7 +77,13 @@ def get_engine():
             st.error("⚠️ No DATABASE_URL found. Please check secrets.toml or .env")
             st.stop()
 
-        return create_engine(url, pool_pre_ping=True)
+        return create_engine(
+            url,
+            pool_size=5,
+            max_overflow=10,
+            pool_timeout=30,
+            pool_pre_ping=True
+        )
     except Exception as e:
         st.error(f"DB connection failed: {e}")
         st.stop()
@@ -85,7 +91,7 @@ def get_engine():
 # ─── Data Loaders ────────────────────────────────────────────
 
 
-@st.cache_data(ttl=30, show_spinner=False)
+@st.cache_data(ttl=600, show_spinner=False)
 def load_kpi_stats(_engine):
     q = text("""
         SELECT
