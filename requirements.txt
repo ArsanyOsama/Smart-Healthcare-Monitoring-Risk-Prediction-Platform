@@ -29,3 +29,5 @@ pytest-cov>=4.1.0
 # Utils
 tqdm>=4.66.0
 colorlog>=6.7.0
+psycopg2-binary==2.9.9
+SQLAlchemy==2.0.27
