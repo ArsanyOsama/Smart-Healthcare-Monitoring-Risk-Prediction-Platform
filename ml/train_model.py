@@ -107,7 +107,7 @@ def train_and_save(db_url: str, model_path: str = 'ml/models/risk_model.pkl'):
     cv_results = cross_validate(model, X_df, y, cv=kf,
                                 scoring=[
                                     'recall_weighted', 'precision_weighted', 'f1_weighted', 'accuracy'],
-                                fit_params={'sample_weight': sample_weights})
+                                params={'sample_weight': sample_weights})
 
     metrics = {
         'test_recall':    float(cv_results['test_recall_weighted'].mean()),
