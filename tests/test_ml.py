@@ -114,7 +114,7 @@ class TestSavedModel:
         df = _fake_features(20)
         X = df[FEATURE_COLS]
         proba = model.predict_proba(X)
-        assert proba.shape == (20, 2), f"Expected (20,2), got {proba.shape}"
+        assert proba.shape == (20, 4), f"Expected (20,4), got {proba.shape}"
         assert (proba >= 0).all() and (
             proba <= 1).all(), "Probabilities out of [0,1]"
 

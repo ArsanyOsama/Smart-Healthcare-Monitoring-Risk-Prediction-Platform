@@ -67,7 +67,7 @@ def get_engine():
 
         # 1. Try Streamlit Secrets (for production or local TOML)
         if hasattr(st, "secrets"):
-            url = st.secrets.get("db_url") or st.secrets.get("SUPABASE_DB_URL")
+            url = st.secrets.get("supabase", {}).get("db_url")
 
         # 2. Fallback to Environment Variables (from .env)
         if not url:
