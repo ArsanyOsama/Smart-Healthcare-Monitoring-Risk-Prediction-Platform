@@ -1,5 +1,4 @@
 # requirements.txt — UNIFIED FINAL VERSION
-python-3.12
 # Core Data Engineering
 pandas>=2.0.0
 numpy>=1.24.0
