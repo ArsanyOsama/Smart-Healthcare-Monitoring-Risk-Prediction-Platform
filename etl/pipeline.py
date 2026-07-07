@@ -4,15 +4,17 @@ Run: python etl/pipeline.py
 Owner: Arsany Osama
 """
 
-from etl.logging_config import get_logger
-from etl.load import get_engine, load_patients, load_vitals, log_etl_run
-from etl.transform import transform_patients, transform_vitals
-from etl.extract import extract_patients, extract_vitals
-from dotenv import load_dotenv
-import time
 import os
 import sys
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+# This MUST be the very first thing before any other imports
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
+import time
+from dotenv import load_dotenv
+from etl.extract import extract_patients, extract_vitals
+from etl.transform import transform_patients, transform_vitals
+from etl.load import get_engine, load_patients, load_vitals, log_etl_run
+from etl.logging_config import get_logger
 
 load_dotenv()
 log = get_logger('etl.pipeline')

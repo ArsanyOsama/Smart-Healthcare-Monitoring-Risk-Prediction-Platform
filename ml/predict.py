@@ -4,16 +4,23 @@ Loads saved model and scores all active patients, persists to risk_scores table.
 Owner: Ahmed Adel Abd ElAziz
 Run: python ml/predict.py
 """
-from ml.feature_engineering import build_features, FEATURE_COLS
-import os
-import sys
 import pickle
 import logging
 import json
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
+from ml.feature_engineering import build_features, FEATURE_COLS
+import os
+import sys
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+# 1. BULLETPROOF PATH FIX (Must be the absolute first executable lines)
+current_dir = os.path.dirname(os.path.abspath(__file__))
+project_root = os.path.abspath(os.path.join(current_dir, '..'))
+sys.path.insert(0, project_root)
+
+# 2. INTERNAL IMPORTS
+
+# 3. EXTERNAL IMPORTS
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO,
@@ -91,7 +98,7 @@ def predict_and_store(db_url: str, model_path: str = MODEL_PATH):
                     (patient_id, risk_score, risk_level, model_version, feature_importances)
                 VALUES
                     (:patient_id, :risk_score, :risk_level, :model_version,
-                     :feature_importances::jsonb)
+                     CAST(:feature_importances AS jsonb))
             """), chunk)
 
     critical = sum(1 for r in rows if r['risk_level'] == 'CRITICAL')

@@ -310,7 +310,11 @@ def page_ml_insights(engine):
     import json
     import os
 
-    metrics_path = 'ml/models/metrics.json'
+    # BULLETPROOF PATH FIX
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.abspath(os.path.join(current_dir, '..'))
+    metrics_path = os.path.join(project_root, 'ml', 'models', 'metrics.json')
+
     if os.path.exists(metrics_path):
         with open(metrics_path) as f:
             metrics = json.load(f)

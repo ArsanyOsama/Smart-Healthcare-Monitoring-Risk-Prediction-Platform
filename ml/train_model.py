@@ -3,24 +3,31 @@ ml/train_model.py
 Trains XGBoost risk classifier and saves in the format dashboard expects.
 Run: python ml/train_model.py
 """
+from xgboost import XGBClassifier
+from sklearn.utils.class_weight import compute_class_weight
+from sklearn.preprocessing import LabelEncoder
+from sklearn.model_selection import StratifiedKFold, cross_validate
+from sqlalchemy import create_engine
+from dotenv import load_dotenv
+from datetime import datetime
+import pandas as pd
+import numpy as np
+import logging
+import pickle
+import json
 from ml.feature_engineering import build_features, FEATURE_COLS
 import os
 import sys
-import json
-import pickle
-import logging
-import numpy as np
-import pandas as pd
-from datetime import datetime
-from dotenv import load_dotenv
-from sqlalchemy import create_engine
 
-from sklearn.model_selection import StratifiedKFold, cross_validate
-from sklearn.preprocessing import LabelEncoder
-from sklearn.utils.class_weight import compute_class_weight
-from xgboost import XGBClassifier
+# 1. BULLETPROOF PATH FIX (Must be the absolute first executable lines)
+current_dir = os.path.dirname(os.path.abspath(__file__))
+project_root = os.path.abspath(os.path.join(current_dir, '..'))
+sys.path.insert(0, project_root)
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+# 2. INTERNAL IMPORTS
+
+# 3. EXTERNAL IMPORTS
+
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO,
@@ -107,7 +114,7 @@ def train_and_save(db_url: str, model_path: str = 'ml/models/risk_model.pkl'):
     cv_results = cross_validate(model, X_df, y, cv=kf,
                                 scoring=[
                                     'recall_weighted', 'precision_weighted', 'f1_weighted', 'accuracy'],
-                                params={'sample_weight': sample_weights})
+                                fit_params={'sample_weight': sample_weights})
 
     metrics = {
         'test_recall':    float(cv_results['test_recall_weighted'].mean()),

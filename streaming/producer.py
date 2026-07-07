@@ -5,25 +5,29 @@ Owner: Noureldeen Mohamed
 
 Run: python streaming/producer.py
 """
-
-from streaming.alert_engine import AlertEngine
-import time
+from sqlalchemy import create_engine, text
+from dotenv import load_dotenv
+from datetime import datetime
+import logging
+import argparse
+import numpy as np
 import random
+import time
+from streaming.alert_engine import AlertEngine
 import os
 import sys
-import numpy as np
-import argparse
-import logging
-from datetime import datetime
-from dotenv import load_dotenv
-from sqlalchemy import create_engine, text
 
+# 1. THIS MUST COME FIRST
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
+# 2. NOW Python can find the 'streaming' folder
+
+# 3. The rest of your standard imports
+
 load_dotenv()
-log = logging.getLogger('streaming.producer')
 logging.basicConfig(level=logging.INFO,
                     format='%(asctime)s [%(levelname)s] %(message)s')
+log = logging.getLogger('streaming.producer')
 
 
 def get_active_patient_ids(engine) -> list[str]:
@@ -46,15 +50,16 @@ def get_active_patient_ids(engine) -> list[str]:
 
 def generate_reading(patient_id: str, t: int = 0) -> dict:
     """Simulate a single vital reading with mild random walk."""
+    # We cast to standard float() to prevent psycopg2 from choking on np.float64
     return {
         'patient_id':       patient_id,
         'timestamp':        datetime.now().isoformat(),
-        'heart_rate':       round(max(40, min(180, random.gauss(78, 12) + np.sin(t/20)*4)), 1),
-        'bp_systolic':      round(max(75, min(220, random.gauss(125, 18))), 1),
-        'bp_diastolic':     round(max(45, min(130, random.gauss(78, 10))), 1),
-        'temperature':      round(max(35.0, min(40.5, random.gauss(36.8, 0.4))), 1),
-        'oxygen_saturation': round(max(75, min(100, random.gauss(97, 1.5))), 1),
-        'respiratory_rate': round(max(8, min(38, random.gauss(16, 2.5))), 1),
+        'heart_rate':       float(round(max(40, min(180, random.gauss(78, 12) + float(np.sin(t/20)*4))), 1)),
+        'bp_systolic':      float(round(max(75, min(220, random.gauss(125, 18))), 1)),
+        'bp_diastolic':     float(round(max(45, min(130, random.gauss(78, 10))), 1)),
+        'temperature':      float(round(max(35.0, min(40.5, random.gauss(36.8, 0.4))), 1)),
+        'oxygen_saturation': float(round(max(75, min(100, random.gauss(97, 1.5))), 1)),
+        'respiratory_rate':  float(round(max(8, min(38, random.gauss(16, 2.5))), 1)),
     }
 
 
