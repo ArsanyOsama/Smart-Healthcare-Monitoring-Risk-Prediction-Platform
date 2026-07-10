@@ -128,6 +128,7 @@ def load_risk_summary(_engine):
         return pd.read_sql(text("SELECT * FROM v_risk_summary ORDER BY risk_score DESC NULLS LAST"), conn)
 
 
+# ── STALE DATA FIX: Uses (SELECT MAX...) instead of NOW() ──
 @st.cache_data(ttl=60, show_spinner=False)
 def load_vitals_for_patient(_engine, patient_id: str, hours: int = 24):
     q = text("""
@@ -135,27 +136,33 @@ def load_vitals_for_patient(_engine, patient_id: str, hours: int = 24):
                oxygen_saturation, temperature, respiratory_rate
         FROM vital_signs
         WHERE patient_id = :pid
-          AND timestamp >= NOW() - INTERVAL '1 hour' * :hrs
+          AND timestamp >= (
+              SELECT COALESCE(MAX(timestamp), NOW()) 
+              FROM vital_signs 
+              WHERE patient_id = :pid
+          ) - INTERVAL '1 hour' * :hrs
         ORDER BY timestamp ASC
     """)
     with _engine.connect() as conn:
         return pd.read_sql(q, conn, params={'pid': patient_id, 'hrs': hours})
 
 
-# ── LOADERS FROM PART B & C ──
 @st.cache_data(ttl=60, show_spinner=False)
 def load_latest_vitals_all(_engine):
     with _engine.connect() as conn:
         return pd.read_sql(text("SELECT * FROM v_patient_latest_vitals"), conn)
 
 
+# ── STALE DATA FIX: Uses (SELECT MAX...) instead of NOW() ──
 @st.cache_data(ttl=30, show_spinner=False)
 def load_alert_volume_hourly(_engine, hours: int = 48):
     q = text(f"""
         SELECT date_trunc('hour', triggered_at) AS hour,
                severity, COUNT(*) AS alert_count
         FROM alerts
-        WHERE triggered_at >= NOW() - INTERVAL '{hours} hours'
+        WHERE triggered_at >= (
+            SELECT COALESCE(MAX(triggered_at), NOW()) FROM alerts
+        ) - INTERVAL '{hours} hours'
         GROUP BY 1, severity ORDER BY 1
     """)
     with _engine.connect() as conn:
@@ -172,41 +179,52 @@ def load_admission_trend(_engine):
         return pd.read_sql(q, conn)
 
 
+# ── STALE DATA & POSTGRES ARRAY FIX (With Pylance bypass) ──
 @st.cache_data(ttl=20, show_spinner=False)
 def load_sparkline_batch(_engine, patient_ids: list, hours: int = 6):
+    import typing  # Import typing to silence Pylance
+    
     if not patient_ids:
         return pd.DataFrame()
-
-    # We bind the parameters directly to the SQLAlchemy text object here
+    
     q = text("""
         SELECT patient_id, timestamp, heart_rate, oxygen_saturation
         FROM vital_signs
         WHERE patient_id = ANY(:pids)
-          AND timestamp >= NOW() - INTERVAL '1 hour' * :hrs
+          AND timestamp >= (
+              SELECT COALESCE(MAX(timestamp), NOW()) 
+              FROM vital_signs 
+              WHERE patient_id = ANY(:pids)
+          ) - INTERVAL '1 hour' * :hrs
         ORDER BY patient_id, timestamp ASC
-    """).bindparams(pids=tuple(patient_ids), hrs=hours)
-
+    """)
+    
     with _engine.connect() as conn:
-        # Now we don't need to pass the 'params' argument to pandas at all!
-        return pd.read_sql(q, conn)
+        # Explicitly typing as Any forces Pylance to stop checking this dictionary's types
+        sql_params: typing.Any = {'pids': list(patient_ids), 'hrs': hours}
+        return pd.read_sql(q, conn, params=sql_params)
 
 
 def severity_badge(sev: str) -> str:
     return f'<span class="badge-{sev.lower()}">{sev}</span>'
 
 
-# ─── PART A: Global Filter Logic ─────────────────────────────
+# ── EMPTY FILTER STATE FIX ──
 def apply_filters(df: pd.DataFrame) -> pd.DataFrame:
     """Apply the sidebar's global filters to any risk_summary-shaped dataframe."""
     if df.empty:
         return df
 
-    # Read from session state (set in the sidebar)
-    wards = st.session_state.get(
-        "selected_wards", df['ward'].unique().tolist() if 'ward' in df.columns else [])
+    # Read from session state. If empty (user cleared it), default to ALL available options
+    wards = st.session_state.get("selected_wards", [])
+    if not wards and 'ward' in df.columns:
+        wards = df['ward'].dropna().unique().tolist()
+
+    risks = st.session_state.get("selected_risk", [])
+    if not risks:
+        risks = ['LOW', 'MEDIUM', 'HIGH', 'CRITICAL']
+
     ages = st.session_state.get("age_range", (0, 100))
-    risks = st.session_state.get(
-        "selected_risk", ['LOW', 'MEDIUM', 'HIGH', 'CRITICAL'])
 
     # Core filters
     out = df[
@@ -226,17 +244,12 @@ def apply_filters(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-# ─── CHART & WIDGET RENDERING FUNCTIONS (Parts B, C, D, E) ───
-
-# ── PART D — GAUGE RENDERING ──
+# ─── CHART & WIDGET RENDERING FUNCTIONS ───
 def render_gauge(value, title, val_range, good_range, warn_range, suffix=""):
-    # Fallback if value is NaN
     if pd.isna(value):
         value = 0
-
     fig = go.Figure(go.Indicator(
-        mode="gauge+number",
-        value=value,
+        mode="gauge+number", value=value,
         number={'suffix': suffix, 'font': {'color': '#00C896', 'size': 28}},
         title={'text': title, 'font': {'color': '#9ab8c8', 'size': 13}},
         gauge={
@@ -254,7 +267,6 @@ def render_gauge(value, title, val_range, good_range, warn_range, suffix=""):
     return fig
 
 
-# ── PART E4 — BEDSIDE TRACE WIDGET ──
 def render_bedside_view(vitals_df: pd.DataFrame):
     st.subheader("🩺 Bedside Monitor View")
     traces = [
@@ -263,7 +275,6 @@ def render_bedside_view(vitals_df: pd.DataFrame):
         ('bp_systolic', 'BP Sys', '#ff3b3b'),
         ('respiratory_rate', 'Resp', '#ffe135'),
         ('temperature', 'Temp', '#ff8c00'),
-        # Modified slightly as MAP may not exist
         ('bp_diastolic', 'BP Dia', '#c77dff'),
     ]
     cols = st.columns(3)
@@ -272,23 +283,20 @@ def render_bedside_view(vitals_df: pd.DataFrame):
             continue
         with cols[i % 3]:
             fig = go.Figure()
-            fig.add_trace(go.Scatter(y=vitals_df[param], mode='lines',
-                                     line=dict(color=color, width=1.5)))
+            fig.add_trace(go.Scatter(
+                y=vitals_df[param], mode='lines', line=dict(color=color, width=1.5)))
             fig.update_layout(
                 title=dict(text=label, font=dict(color=color, size=12)),
                 height=120, margin=dict(l=5, r=5, t=25, b=5),
                 paper_bgcolor='#000814', plot_bgcolor='#000814',
-                xaxis=dict(visible=False), yaxis=dict(color='#333', gridcolor='#111'),
-                showlegend=False
+                xaxis=dict(visible=False), yaxis=dict(color='#333', gridcolor='#111'), showlegend=False
             )
             st.plotly_chart(fig, use_container_width=True,
                             config={'displayModeBar': False})
 
 
-# ── PART C — LIVE MONITOR GRID ──
 def render_monitor_grid(engine, filtered_df: pd.DataFrame, top_n: int = 12):
     st.subheader("🖥️ Live Multi-Patient Monitor")
-
     watch_list = filtered_df.sort_values(
         'risk_score', ascending=False).head(top_n)
     if watch_list.empty:
@@ -297,9 +305,8 @@ def render_monitor_grid(engine, filtered_df: pd.DataFrame, top_n: int = 12):
 
     sparklines = load_sparkline_batch(
         engine, watch_list['patient_id'].tolist())
-
-    SEVERITY_COLOR = {'CRITICAL': '#c0392b', 'HIGH': '#e67e22',
-                      'MEDIUM': '#f39c12', 'LOW': '#27ae60'}
+    SEVERITY_COLOR = {'CRITICAL': '#c0392b',
+                      'HIGH': '#e67e22', 'MEDIUM': '#f39c12', 'LOW': '#27ae60'}
 
     cols_per_row = 4
     rows = [watch_list.iloc[i:i + cols_per_row]
@@ -327,21 +334,17 @@ def render_monitor_grid(engine, filtered_df: pd.DataFrame, top_n: int = 12):
                     spark = go.Figure()
                     spark.add_trace(go.Scatter(
                         y=patient_spark['heart_rate'], mode='lines',
-                        line=dict(color=color, width=2), fill='tozeroy',
-                        fillcolor=color + '22'
+                        line=dict(color=color, width=2), fill='tozeroy', fillcolor=color + '22'
                     ))
                     spark.update_layout(
                         height=50, margin=dict(l=0, r=0, t=0, b=0),
                         xaxis=dict(visible=False), yaxis=dict(visible=False),
-                        paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
-                        showlegend=False
+                        paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', showlegend=False
                     )
                     st.plotly_chart(spark, use_container_width=True,
-                                    config={'displayModeBar': False},
-                                    key=f"spark_{patient['patient_id']}")
+                                    config={'displayModeBar': False}, key=f"spark_{patient['patient_id']}")
 
 
-# ── PART B — OVERVIEW CHARTS ──
 def render_ward_comparison(filtered_df: pd.DataFrame):
     st.subheader("🏥 Ward Comparison")
     if filtered_df.empty or 'ward' not in filtered_df.columns:
@@ -356,14 +359,11 @@ def render_ward_comparison(filtered_df: pd.DataFrame):
 
     fig = go.Figure()
     fig.add_trace(go.Bar(x=ward_stats['ward'], y=ward_stats['patients'],
-                         name='Patients', marker_color='#00C896', yaxis='y'))
+                  name='Patients', marker_color='#00C896', yaxis='y'))
     fig.add_trace(go.Scatter(x=ward_stats['ward'], y=ward_stats['avg_risk'],
-                             name='Avg Risk', marker_color='#D4A017',
-                             mode='lines+markers', yaxis='y2'))
+                  name='Avg Risk', marker_color='#D4A017', mode='lines+markers', yaxis='y2'))
     fig.update_layout(
-        yaxis=dict(title='Patient Count'),
-        yaxis2=dict(title='Avg Risk Score', overlaying='y',
-                    side='right', range=[0, 1]),
+        yaxis=dict(title='Patient Count'), yaxis2=dict(title='Avg Risk Score', overlaying='y', side='right', range=[0, 1]),
         paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(13,27,42,0.8)',
         font_color='#e0e0e0', legend=dict(orientation='h', y=1.15), height=320
     )
@@ -376,12 +376,10 @@ def render_vitals_distribution(vitals_df: pd.DataFrame):
         st.info("No vital sign data available.")
         return
 
-    metric = st.selectbox("Vital sign", ['heart_rate', 'oxygen_saturation',
-                                         'bp_systolic', 'respiratory_rate'], key='dist_metric')
-    normal_ranges = {
-        'heart_rate': (60, 100), 'oxygen_saturation': (95, 100),
-        'bp_systolic': (90, 120), 'respiratory_rate': (12, 20)
-    }
+    metric = st.selectbox("Vital sign", [
+                          'heart_rate', 'oxygen_saturation', 'bp_systolic', 'respiratory_rate'], key='dist_metric')
+    normal_ranges = {'heart_rate': (60, 100), 'oxygen_saturation': (
+        95, 100), 'bp_systolic': (90, 120), 'respiratory_rate': (12, 20)}
 
     if metric in vitals_df.columns:
         lo, hi = normal_ranges[metric]
@@ -389,8 +387,8 @@ def render_vitals_distribution(vitals_df: pd.DataFrame):
                            color_discrete_sequence=['#00C896'])
         fig.add_vrect(x0=lo, x1=hi, fillcolor='#27ae60', opacity=0.15, line_width=0,
                       annotation_text="Normal range", annotation_position="top left")
-        fig.update_layout(paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(13,27,42,0.8)',
-                          font_color='#e0e0e0', height=320)
+        fig.update_layout(paper_bgcolor='rgba(0,0,0,0)',
+                          plot_bgcolor='rgba(13,27,42,0.8)', font_color='#e0e0e0', height=320)
         st.plotly_chart(fig, use_container_width=True)
     else:
         st.warning(f"Column '{metric}' not found in vitals data.")
@@ -408,20 +406,19 @@ def render_age_risk_scatter(filtered_df: pd.DataFrame):
         color_discrete_map={'LOW': '#27ae60', 'MEDIUM': '#f39c12',
                             'HIGH': '#e67e22', 'CRITICAL': '#c0392b'}
     )
-    fig.update_layout(paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(13,27,42,0.8)',
-                      font_color='#e0e0e0', height=340)
+    fig.update_layout(paper_bgcolor='rgba(0,0,0,0)',
+                      plot_bgcolor='rgba(13,27,42,0.8)', font_color='#e0e0e0', height=340)
     st.plotly_chart(fig, use_container_width=True)
 
 
 def render_alert_volume(alert_hourly_df: pd.DataFrame):
-    st.subheader("🚨 Alert Volume — Last 48 Hours")
+    st.subheader("🚨 Alert Volume — Last Window")
     if alert_hourly_df.empty:
         st.info("No alerts recorded yet in this window.")
         return
 
     fig = px.bar(alert_hourly_df, x='hour', y='alert_count', color='severity',
-                 color_discrete_map={'LOW': '#27ae60', 'MEDIUM': '#f39c12',
-                                     'HIGH': '#e67e22', 'CRITICAL': '#c0392b'})
+                 color_discrete_map={'LOW': '#27ae60', 'MEDIUM': '#f39c12', 'HIGH': '#e67e22', 'CRITICAL': '#c0392b'})
     fig.update_layout(paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(13,27,42,0.8)',
                       font_color='#e0e0e0', height=300, barmode='stack')
     st.plotly_chart(fig, use_container_width=True)
@@ -444,14 +441,12 @@ def render_comorbidity_prevalence(filtered_df: pd.DataFrame):
             ) * 100 if 'smoking' in filtered_df else 0,
         ]
     })
-    # Pass text_auto=True to satisfy Pylance, then format manually
+    # PYLANCE FIX: Using text_auto=True, formatting applied via update_traces
     fig = px.bar(data, x='Condition', y='Percentage', color='Condition',
-                 color_discrete_map={'Diabetes': '#e74c3c',
-                                     'Hypertension': '#3498db',
-                                     'Smoking': '#9b59b6'},
-                 text_auto=True)
+                 color_discrete_sequence=['#e67e22', '#c0392b', '#7f8c8d'], text_auto=True)
+    fig.update_traces(texttemplate='%{y:.1f}')
     fig.update_layout(paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(13,27,42,0.8)',
-                      font_color='#e0e0e0', height=280, showlegend=False), fig.update_traces(texttemplate='%{y:.1f}')
+                      font_color='#e0e0e0', height=280, showlegend=False)
     st.plotly_chart(fig, use_container_width=True)
 
 
@@ -485,8 +480,8 @@ def render_admission_trend(df: pd.DataFrame):
 
     fig = px.area(df, x='admission_date', y='admissions',
                   color_discrete_sequence=['#00C896'])
-    fig.update_layout(paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(13,27,42,0.8)',
-                      font_color='#e0e0e0', height=260)
+    fig.update_layout(paper_bgcolor='rgba(0,0,0,0)',
+                      plot_bgcolor='rgba(13,27,42,0.8)', font_color='#e0e0e0', height=260)
     st.plotly_chart(fig, use_container_width=True)
 
 
@@ -494,14 +489,12 @@ def render_admission_trend(df: pd.DataFrame):
 def main():
     engine = get_engine()
 
-    # ── Sidebar ──────────────────────────────────────────────
     with st.sidebar:
         st.markdown("## 🏥 Healthcare Monitor")
         st.markdown("---")
-        page = st.radio("Navigate", ["📊 Overview", "🧑 Patient Monitor",
-                                     "🚨 Alerts", "🤖 ML Insights"])
+        page = st.radio(
+            "Navigate", ["📊 Overview", "🧑 Patient Monitor", "🚨 Alerts", "🤖 ML Insights"])
 
-        # ── PART A — Global Control Layer ──
         st.markdown("---")
         st.markdown("### 🎛️ Filters")
 
@@ -539,7 +532,6 @@ def main():
             st.cache_data.clear()
             st.rerun()
 
-        # ── PART E3 — Data Freshness "LIVE" Pulse ──
         st.markdown("""
         <style>
         @keyframes pulse { 0%{opacity:1} 50%{opacity:0.25} 100%{opacity:1} }
@@ -549,11 +541,8 @@ def main():
         """, unsafe_allow_html=True)
         st.markdown(f'<span class="live-dot"></span> **LIVE** · updated {datetime.now().strftime("%H:%M:%S")}',
                     unsafe_allow_html=True)
-        # ───────────────────────────────────────────
-
         st.caption("DEPI R4 | CAI4-AIS5-S3")
 
-    # ── Pages Dispatcher ─────────────────────────────────────
     if page == "📊 Overview":
         page_overview(engine)
     elif page == "🧑 Patient Monitor":
@@ -564,11 +553,9 @@ def main():
         page_ml_insights(engine)
 
 
-# ── PAGE VIEWS ──
 def page_overview(engine):
     st.title("📊 Platform Overview")
 
-    # ── PART A — Adjustable Alert Thresholds ──
     with st.expander("⚙️ Adjust Alert Thresholds (this session only)"):
         c1, c2, c3 = st.columns(3)
         with c1:
@@ -581,49 +568,40 @@ def page_overview(engine):
         st.caption(
             "Recalculates the charts below live. Your real alert_engine.py thresholds in the database are unchanged.")
 
-    # ── WIRING UP PART F (Strict Structure Implementation) ──
     stats = load_kpi_stats(engine)
     all_risk_df = load_risk_summary(engine)
-    # PART A filter applied here
     filtered_df = apply_filters(all_risk_df)
     vitals_df = load_latest_vitals_all(engine)
 
-    # 1. Existing KPI Row
     c1, c2, c3, c4 = st.columns(4)
     with c1:
-        st.metric("🏥 Active Patients",    stats['total_patients'])
+        st.metric("🏥 Active Patients", stats['total_patients'])
     with c2:
-        st.metric("🚨 Active Alerts",       stats['active_alerts'],
+        st.metric("🚨 Active Alerts", stats['active_alerts'],
                   delta=f"{stats['critical_alerts']} critical", delta_color="inverse")
     with c3:
-        st.metric("⚠️ High Risk Patients",  stats['high_risk_patients'])
+        st.metric("⚠️ High Risk Patients", stats['high_risk_patients'])
     with c4:
         st.metric("📡 Monitoring Coverage", "95%", "+5% vs target")
 
-    # 2. PART D — Gauges
     st.markdown("<br>", unsafe_allow_html=True)
     g1, g2, g3 = st.columns(3)
     with g1:
-        st.plotly_chart(render_gauge(vitals_df['heart_rate'].mean() if not vitals_df.empty else 0, "Avg Heart Rate",
-                                     (40, 160), [60, 100], [100, 130], " bpm"),
-                        use_container_width=True)
+        st.plotly_chart(render_gauge(vitals_df['heart_rate'].mean() if not vitals_df.empty else 0, "Avg Heart Rate", (40, 160), [
+                        60, 100], [100, 130], " bpm"), use_container_width=True)
     with g2:
-        st.plotly_chart(render_gauge(vitals_df['oxygen_saturation'].mean() if not vitals_df.empty else 0, "Avg SpO₂",
-                                     (80, 100), [95, 100], [90, 95], "%"),
-                        use_container_width=True)
+        st.plotly_chart(render_gauge(vitals_df['oxygen_saturation'].mean(
+        ) if not vitals_df.empty else 0, "Avg SpO₂", (80, 100), [95, 100], [90, 95], "%"), use_container_width=True)
     with g3:
-        st.plotly_chart(render_gauge(vitals_df['bp_systolic'].mean() if not vitals_df.empty else 0, "Avg BP Systolic",
-                                     (70, 200), [90, 120], [120, 160], " mmHg"),
-                        use_container_width=True)
+        st.plotly_chart(render_gauge(vitals_df['bp_systolic'].mean() if not vitals_df.empty else 0, "Avg BP Systolic", (70, 200), [
+                        90, 120], [120, 160], " mmHg"), use_container_width=True)
 
     st.divider()
 
-    # 3. PART C — The Signature Feature (Monitor Grid)
     render_monitor_grid(engine, filtered_df)
 
     st.divider()
 
-    # 4. PART B — New Charts Grid
     b1, b2 = st.columns(2)
     with b1:
         render_ward_comparison(filtered_df)
@@ -646,31 +624,22 @@ def page_overview(engine):
 
     st.divider()
 
-    # 5. Existing "Patient Risk Table" Section (sourced from filtered_df)
     col1, col2 = st.columns([1, 2])
     with col1:
         if not filtered_df.empty and 'risk_level' in filtered_df.columns:
             dist = filtered_df['risk_level'].value_counts().reset_index()
             dist.columns = ['Risk Level', 'Count']
-            fig = px.pie(dist, values='Count', names='Risk Level',
-                         hole=0.5, title="Filtered Risk Distribution",
-                         color='Risk Level',
-                         color_discrete_map={
-                             'LOW': '#27ae60', 'MEDIUM': '#f39c12',
-                             'HIGH': '#e67e22', 'CRITICAL': '#c0392b'
-                         })
-            fig.update_layout(
-                paper_bgcolor='rgba(0,0,0,0)',
-                plot_bgcolor='rgba(0,0,0,0)',
-                font_color='#e0e0e0', margin=dict(t=40, b=0, l=0, r=0)
-            )
+            fig = px.pie(dist, values='Count', names='Risk Level', hole=0.5, title="Filtered Risk Distribution",
+                         color='Risk Level', color_discrete_map={'LOW': '#27ae60', 'MEDIUM': '#f39c12', 'HIGH': '#e67e22', 'CRITICAL': '#c0392b'})
+            fig.update_layout(paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+                              font_color='#e0e0e0', margin=dict(t=40, b=0, l=0, r=0))
             st.plotly_chart(fig, use_container_width=True)
 
     with col2:
         st.subheader("Filtered Patient Risk Table")
         if not filtered_df.empty:
-            display = filtered_df[['patient_id', 'full_name', 'age', 'ward',
-                                   'risk_level', 'risk_score', 'active_alerts']].head(15)
+            display = filtered_df[['patient_id', 'full_name', 'age',
+                                   'ward', 'risk_level', 'risk_score', 'active_alerts']].head(15)
             display['risk_score'] = display['risk_score'].apply(
                 lambda x: f"{x:.1%}" if pd.notnull(x) else "—")
             st.dataframe(display, hide_index=True, use_container_width=True)
@@ -684,16 +653,11 @@ def page_patient_monitor(engine):
         return
 
     name_lookup = dict(zip(risk_df['patient_id'], risk_df['full_name']))
-
-    def _fmt(pid: str) -> str:
-        name = name_lookup.get(pid)
-        return f"{pid} — {name}" if pd.notnull(name) else f"{pid} — Patient"
+    def _fmt(
+        pid: str) -> str: return f"{pid} — {name_lookup.get(pid, 'Patient')}"
 
     patient_id = st.selectbox(
-        "Select Patient",
-        risk_df['patient_id'].tolist(),
-        format_func=_fmt
-    )
+        "Select Patient", risk_df['patient_id'].tolist(), format_func=_fmt)
 
     if not patient_id:
         st.info("No patient selected.")
@@ -708,11 +672,9 @@ def page_patient_monitor(engine):
 
     vitals['timestamp'] = pd.to_datetime(vitals['timestamp'])
 
-    # ── PART E4 — Bedside Trace View rendered first ──
     render_bedside_view(vitals)
     st.divider()
 
-    # ── HISTORICAL INDIVIDUAL CHARTS WITH ZONE BANDS (PART E2) ──
     for param, label, color, lo, hi in [
         ('heart_rate',        '❤️ Heart Rate (bpm)',      '#e74c3c', 60, 100),
         ('oxygen_saturation', '💨 SpO₂ (%)',             '#3498db', 95, 100),
@@ -722,10 +684,9 @@ def page_patient_monitor(engine):
         if param not in vitals.columns:
             continue
         fig = go.Figure()
-        fig.add_trace(go.Scatter(x=vitals['timestamp'], y=vitals[param],
-                                 mode='lines+markers', name=label, line_color=color))
+        fig.add_trace(go.Scatter(
+            x=vitals['timestamp'], y=vitals[param], mode='lines+markers', name=label, line_color=color))
 
-        # PART E2 — Zone Bands
         fig.add_hrect(y0=lo, y1=hi, fillcolor='#27ae60',
                       opacity=0.08, line_width=0)
         fig.add_hrect(y0=hi, y1=hi*1.3 if hi > 0 else 100,
@@ -736,8 +697,7 @@ def page_patient_monitor(engine):
         fig.add_hline(y=lo, line_dash='dash', line_color='#3498db',
                       opacity=0.5, annotation_text="Lower limit")
 
-        fig.update_layout(title=label, paper_bgcolor='rgba(0,0,0,0)',
-                          plot_bgcolor='rgba(13,27,42,0.8)',
+        fig.update_layout(title=label, paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(13,27,42,0.8)',
                           font_color='#e0e0e0', height=220, margin=dict(t=30, b=20))
         st.plotly_chart(fig, use_container_width=True)
 
@@ -750,30 +710,24 @@ def page_alerts(engine):
         st.success("✅ No active alerts at this time.")
         return
 
-    sevs = st.multiselect("Filter by severity",
-                          ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW'],
-                          default=['CRITICAL', 'HIGH'])
+    sevs = st.multiselect("Filter by severity", [
+                          'CRITICAL', 'HIGH', 'MEDIUM', 'LOW'], default=['CRITICAL', 'HIGH'])
     if sevs:
         alerts = alerts[alerts['severity'].isin(sevs)]
 
-    # ── PART E1 — Alert Acknowledgment ──
     for _, row in alerts.iterrows():
         col1, col2 = st.columns([6, 1])
         with col1:
             badge = severity_badge(row['severity'])
-            st.markdown(f"""
-            {badge} **{row['patient_id']}** — Ward: `{row['ward']}`
+            st.markdown(f"""{badge} **{row['patient_id']}** — Ward: `{row['ward']}`
             > {row['message']}
             > *{row['minutes_ago']:.0f} min ago*
             """, unsafe_allow_html=True)
         with col2:
-            # Requires the query to return 'alert_id'
             if 'alert_id' in row and st.button("✓ Ack", key=f"ack_{row['alert_id']}"):
                 with engine.begin() as conn:
-                    conn.execute(text("""
-                        UPDATE alerts SET is_active = FALSE, resolved_at = NOW()
-                        WHERE alert_id = :aid
-                    """), {'aid': row['alert_id']})
+                    conn.execute(text("UPDATE alerts SET is_active = FALSE, resolved_at = NOW() WHERE alert_id = :aid"), {
+                                 'aid': row['alert_id']})
                 st.cache_data.clear()
                 st.rerun()
         st.divider()
@@ -781,8 +735,6 @@ def page_alerts(engine):
 
 def page_ml_insights(engine):
     st.title("🤖 ML Risk Insights")
-
-    # BULLETPROOF PATH FIX
     current_dir = os.path.dirname(os.path.abspath(__file__))
     project_root = os.path.abspath(os.path.join(current_dir, '..'))
     metrics_path = os.path.join(project_root, 'ml', 'models', 'metrics.json')
@@ -790,27 +742,22 @@ def page_ml_insights(engine):
     if os.path.exists(metrics_path):
         with open(metrics_path) as f:
             metrics = json.load(f)
-
         c1, c2, c3, c4 = st.columns(4)
         with c1:
-            st.metric("Recall",    f"{metrics.get('test_recall', 0):.1%}")
+            st.metric("Recall", f"{metrics.get('test_recall', 0):.1%}")
         with c2:
             st.metric("Precision", f"{metrics.get('test_precision', 0):.1%}")
         with c3:
-            st.metric("F1-Score",  f"{metrics.get('test_f1', 0):.1%}")
+            st.metric("F1-Score", f"{metrics.get('test_f1', 0):.1%}")
         with c4:
-            st.metric("Accuracy",  f"{metrics.get('test_accuracy', 0):.1%}")
+            st.metric("Accuracy", f"{metrics.get('test_accuracy', 0):.1%}")
 
         if 'feature_importance' in metrics:
             fi = metrics['feature_importance']
-            fig = px.bar(
-                x=list(fi.values()), y=list(fi.keys()),
-                orientation='h', title="🔍 Top Feature Importances (SHAP)",
-                color=list(fi.values()), color_continuous_scale='teal'
-            )
+            fig = px.bar(x=list(fi.values()), y=list(fi.keys()), orientation='h',
+                         title="🔍 Top Feature Importances (SHAP)", color=list(fi.values()), color_continuous_scale='teal')
             fig.update_layout(paper_bgcolor='rgba(0,0,0,0)',
-                              plot_bgcolor='rgba(13,27,42,0.8)',
-                              font_color='#e0e0e0', showlegend=False)
+                              plot_bgcolor='rgba(13,27,42,0.8)', font_color='#e0e0e0', showlegend=False)
             st.plotly_chart(fig, use_container_width=True)
     else:
         st.warning("ML model not trained yet. Run: `python ml/train_model.py`")
