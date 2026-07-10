@@ -82,8 +82,8 @@ services:
         condition: service_healthy
     environment:
       DATABASE_URL: postgresql://postgres:smart-healthcare-depi@db:5432/healthcare_db
-      STREAM_INTERVAL_SECONDS: "30"
-    entrypoint: ["python", "streaming/producer.py", "--interval", "30"]
+      STREAM_INTERVAL_SECONDS: "2"
+    entrypoint: ["python", "streaming/producer.py", "--interval", "2"]
 
 volumes:
   pgdata:
