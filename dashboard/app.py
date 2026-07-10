@@ -65,11 +65,9 @@ def get_engine():
     try:
         url = None
 
-        # 1. Try Streamlit Secrets (for production or local TOML)
         if hasattr(st, "secrets"):
             url = st.secrets.get("supabase", {}).get("db_url")
 
-        # 2. Fallback to Environment Variables (from .env)
         if not url:
             url = os.getenv("SUPABASE_DB_URL") or os.getenv("DATABASE_URL")
 
@@ -128,7 +126,6 @@ def load_risk_summary(_engine):
         return pd.read_sql(text("SELECT * FROM v_risk_summary ORDER BY risk_score DESC NULLS LAST"), conn)
 
 
-# ── STALE DATA FIX: Uses (SELECT MAX...) instead of NOW() ──
 @st.cache_data(ttl=60, show_spinner=False)
 def load_vitals_for_patient(_engine, patient_id: str, hours: int = 24):
     q = text("""
@@ -153,7 +150,6 @@ def load_latest_vitals_all(_engine):
         return pd.read_sql(text("SELECT * FROM v_patient_latest_vitals"), conn)
 
 
-# ── STALE DATA FIX: Uses (SELECT MAX...) instead of NOW() ──
 @st.cache_data(ttl=30, show_spinner=False)
 def load_alert_volume_hourly(_engine, hours: int = 48):
     q = text(f"""
@@ -179,14 +175,12 @@ def load_admission_trend(_engine):
         return pd.read_sql(q, conn)
 
 
-# ── STALE DATA & POSTGRES ARRAY FIX (With Pylance bypass) ──
 @st.cache_data(ttl=20, show_spinner=False)
 def load_sparkline_batch(_engine, patient_ids: list, hours: int = 6):
-    import typing  # Import typing to silence Pylance
-    
+    import typing
     if not patient_ids:
         return pd.DataFrame()
-    
+
     q = text("""
         SELECT patient_id, timestamp, heart_rate, oxygen_saturation
         FROM vital_signs
@@ -198,9 +192,7 @@ def load_sparkline_batch(_engine, patient_ids: list, hours: int = 6):
           ) - INTERVAL '1 hour' * :hrs
         ORDER BY patient_id, timestamp ASC
     """)
-    
     with _engine.connect() as conn:
-        # Explicitly typing as Any forces Pylance to stop checking this dictionary's types
         sql_params: typing.Any = {'pids': list(patient_ids), 'hrs': hours}
         return pd.read_sql(q, conn, params=sql_params)
 
@@ -209,13 +201,10 @@ def severity_badge(sev: str) -> str:
     return f'<span class="badge-{sev.lower()}">{sev}</span>'
 
 
-# ── EMPTY FILTER STATE FIX ──
 def apply_filters(df: pd.DataFrame) -> pd.DataFrame:
-    """Apply the sidebar's global filters to any risk_summary-shaped dataframe."""
     if df.empty:
         return df
 
-    # Read from session state. If empty (user cleared it), default to ALL available options
     wards = st.session_state.get("selected_wards", [])
     if not wards and 'ward' in df.columns:
         wards = df['ward'].dropna().unique().tolist()
@@ -226,14 +215,12 @@ def apply_filters(df: pd.DataFrame) -> pd.DataFrame:
 
     ages = st.session_state.get("age_range", (0, 100))
 
-    # Core filters
     out = df[
         df['ward'].isin(wards) &
         df['age'].between(ages[0], ages[1]) &
         df['risk_level'].isin(risks)
     ]
 
-    # Comorbidity filters
     if st.session_state.get("show_diabetes") is False and 'diabetes' in out.columns:
         out = out[out['diabetes'] != True]
     if st.session_state.get("show_hypertension") is False and 'hypertension' in out.columns:
@@ -308,6 +295,13 @@ def render_monitor_grid(engine, filtered_df: pd.DataFrame, top_n: int = 12):
     SEVERITY_COLOR = {'CRITICAL': '#c0392b',
                       'HIGH': '#e67e22', 'MEDIUM': '#f39c12', 'LOW': '#27ae60'}
 
+    # ── PLOTLY VERSION FIX: Safe Hex to RGBA Converter ──
+    def get_rgba(hex_color, alpha=0.15):
+        h = hex_color.lstrip('#')
+        if len(h) == 3:
+            h = ''.join(c*2 for c in h)
+        return f"rgba({int(h[0:2], 16)}, {int(h[2:4], 16)}, {int(h[4:6], 16)}, {alpha})"
+
     cols_per_row = 4
     rows = [watch_list.iloc[i:i + cols_per_row]
             for i in range(0, len(watch_list), cols_per_row)]
@@ -316,7 +310,8 @@ def render_monitor_grid(engine, filtered_df: pd.DataFrame, top_n: int = 12):
         cols = st.columns(cols_per_row)
         for col, (_, patient) in zip(cols, row_chunk.iterrows()):
             with col:
-                color = SEVERITY_COLOR.get(patient['risk_level'], '#555')
+                risk_val = str(patient.get('risk_level', 'UNKNOWN')).upper()
+                color = SEVERITY_COLOR.get(risk_val, '#555555')
                 patient_spark = sparklines[sparklines['patient_id']
                                            == patient['patient_id']]
 
@@ -325,8 +320,8 @@ def render_monitor_grid(engine, filtered_df: pd.DataFrame, top_n: int = 12):
                             border-radius:8px; padding:10px 12px; margin-bottom:2px;">
                     <strong style="color:#e8f4f8;">{patient['patient_id']}</strong>
                     <span style="float:right; color:{color}; font-size:0.72rem;
-                                 font-weight:700;">{patient['risk_level']}</span><br>
-                    <span style="color:#9ab8c8; font-size:0.78rem;">{patient['ward']} · Age {patient['age']}</span>
+                                 font-weight:700;">{patient.get('risk_level', 'Unknown')}</span><br>
+                    <span style="color:#9ab8c8; font-size:0.78rem;">{patient.get('ward', 'General')} · Age {patient.get('age', '--')}</span>
                 </div>
                 """, unsafe_allow_html=True)
 
@@ -334,7 +329,9 @@ def render_monitor_grid(engine, filtered_df: pd.DataFrame, top_n: int = 12):
                     spark = go.Figure()
                     spark.add_trace(go.Scatter(
                         y=patient_spark['heart_rate'], mode='lines',
-                        line=dict(color=color, width=2), fill='tozeroy', fillcolor=color + '22'
+                        line=dict(color=color, width=2), fill='tozeroy',
+                        # Safe conversion used here
+                        fillcolor=get_rgba(color, 0.15)
                     ))
                     spark.update_layout(
                         height=50, margin=dict(l=0, r=0, t=0, b=0),
@@ -441,7 +438,6 @@ def render_comorbidity_prevalence(filtered_df: pd.DataFrame):
             ) * 100 if 'smoking' in filtered_df else 0,
         ]
     })
-    # PYLANCE FIX: Using text_auto=True, formatting applied via update_traces
     fig = px.bar(data, x='Condition', y='Percentage', color='Condition',
                  color_discrete_sequence=['#e67e22', '#c0392b', '#7f8c8d'], text_auto=True)
     fig.update_traces(texttemplate='%{y:.1f}')
@@ -598,6 +594,7 @@ def page_overview(engine):
 
     st.divider()
 
+    # The Crash was happening here! It is now fixed, meaning the charts below will properly execute.
     render_monitor_grid(engine, filtered_df)
 
     st.divider()
