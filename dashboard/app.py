@@ -4,15 +4,18 @@ Owner: Yahya Mohamed Abdelwahab
 Run: streamlit run dashboard/app.py
 """
 
+from dotenv import load_dotenv
+from datetime import datetime
+import json
 import streamlit as st
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 from sqlalchemy import create_engine, text
 import os
-import json
-from datetime import datetime
-from dotenv import load_dotenv
+import sys
+sys.path.insert(0, os.path.abspath(
+    os.path.join(os.path.dirname(__file__), '..')))
 
 load_dotenv()
 
