@@ -42,7 +42,7 @@ def transform_patients(df: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
     df['smoking'] = df['smoking'].astype(bool)
 
     # Age bounds check
-    invalid_age = (df['age'] < 0) | (df['age'] > 120)
+    invalid_age = df['age'].isna() | (df['age'] < 0) | (df['age'] > 120)
     if invalid_age.any():
         issues['invalid_age'] = int(invalid_age.sum())
         df = df[~invalid_age]

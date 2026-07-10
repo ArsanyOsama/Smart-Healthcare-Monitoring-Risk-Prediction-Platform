@@ -93,6 +93,8 @@ class TestTransform:
         df = extract_patients(n=50)
         df.loc[0, 'patient_id'] = None
         df.loc[1, 'full_name'] = None
+        df['patient_id'] = df['patient_id'].astype(object)
+        df['full_name'] = df['full_name'].astype(object)
         clean, issues = transform_patients(df)
         assert clean['patient_id'].notna().all()
 
@@ -106,6 +108,8 @@ class TestTransform:
 
     def test_transform_patients_age_coercion(self):
         df = extract_patients(n=20)
+        # Force column type to object so it safely accepts string text strings
+        df['age'] = df['age'].astype(object)
         df.loc[0, 'age'] = 'invalid'
         clean, _ = transform_patients(df)
         assert pd.to_numeric(clean['age'], errors='coerce').notna().all()

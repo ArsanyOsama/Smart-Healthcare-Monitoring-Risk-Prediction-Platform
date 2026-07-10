@@ -3,7 +3,7 @@
 # Owner: Ahmed Mostafa Mohamed
 #
 # Usage:
-#   docker compose up -d            # start everything
+#   docker compose up -d --build    # start everything & rebuild images
 #   docker compose logs -f app      # watch app logs
 #   docker compose down -v          # stop and wipe volumes
 # ─────────────────────────────────────────────────────────────
@@ -20,7 +20,7 @@ services:
     environment:
       POSTGRES_DB: healthcare_db
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: localpass
+      POSTGRES_PASSWORD: smart-healthcare-depi
     ports:
       - "5432:5432"
     volumes:
@@ -42,7 +42,7 @@ services:
       db:
         condition: service_healthy
     environment:
-      DATABASE_URL: postgresql://postgres:localpass@db:5432/healthcare_db
+      DATABASE_URL: postgresql://postgres:smart-healthcare-depi@db:5432/healthcare_db
       N_PATIENTS: "1000"
       READINGS_PER_PATIENT: "48"
     entrypoint: >
@@ -68,12 +68,11 @@ services:
     ports:
       - "8501:8501"
     environment:
-      DATABASE_URL: postgresql://postgres:localpass@db:5432/healthcare_db
+      DATABASE_URL: postgresql://postgres:smart-healthcare-depi@db:5432/healthcare_db
     volumes:
       - ./ml/models:/app/ml/models
-    command: ["streamlit", "run", "dashboard/app.py", "--server.port=8501", "--server.address=0.0.0.0"]
 
-  # ── Streaming simulator (optional — comment out if not needed) ──
+  # ── Streaming simulator ──────────────────────────────────────
   streamer:
     build: .
     container_name: healthcare_streamer
@@ -82,7 +81,7 @@ services:
       db:
         condition: service_healthy
     environment:
-      DATABASE_URL: postgresql://postgres:localpass@db:5432/healthcare_db
+      DATABASE_URL: postgresql://postgres:smart-healthcare-depi@db:5432/healthcare_db
       STREAM_INTERVAL_SECONDS: "30"
     entrypoint: ["python", "streaming/producer.py", "--interval", "30"]
 

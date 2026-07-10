@@ -489,7 +489,7 @@ def main():
         st.markdown("## 🏥 Healthcare Monitor")
         st.markdown("---")
         page = st.radio(
-            "Navigate", ["📊 Overview", "🧑 Patient Monitor", "🚨 Alerts", "🤖 ML Insights"])
+            "Navigate", ["📊 Overview", "🧑 Patient Monitor", "🚨 Alerts", "🤖 ML Insights", "🛡️ Governance"])
 
         st.markdown("---")
         st.markdown("### 🎛️ Filters")
@@ -547,6 +547,8 @@ def main():
         page_alerts(engine)
     elif page == "🤖 ML Insights":
         page_ml_insights(engine)
+    elif page == "🛡️ Governance":
+        page_governance(engine)
 
 
 def page_overview(engine):
@@ -758,6 +760,81 @@ def page_ml_insights(engine):
             st.plotly_chart(fig, use_container_width=True)
     else:
         st.warning("ML model not trained yet. Run: `python ml/train_model.py`")
+
+
+def page_governance(engine):
+    st.title("🛡️ Data Engineering Governance Dashboard")
+    st.caption(
+        "Tracking database pipeline health metrics, schema bounds compliance, and input drift indexes.")
+    st.divider()
+
+    # 1. Quality Metrics Row
+    st.subheader("📋 Continuous Automated Data Quality Monitors")
+    c1, c2, c3 = st.columns(3)
+
+    with engine.connect() as conn:
+        null_ids = conn.execute(
+            text("SELECT COUNT(*) FROM vital_signs WHERE patient_id IS NULL")).scalar()
+        bad_spo2 = conn.execute(text(
+            "SELECT COUNT(*) FROM vital_signs WHERE oxygen_saturation NOT BETWEEN 0 AND 100")).scalar()
+        bad_hr = conn.execute(text(
+            "SELECT COUNT(*) FROM vital_signs WHERE heart_rate NOT BETWEEN 20 AND 300")).scalar()
+
+    with c1:
+        if null_ids == 0:
+            st.success(
+                "✅ **CRITICAL VALIDATION**\n\nNo orphaned records. 0 Null Patient IDs found in system records.")
+        else:
+            st.error(
+                f"❌ **CRITICAL CRASH**\n\nOrphaned records caught: {null_ids} Null IDs.")
+    with c2:
+        if bad_spo2 == 0:
+            st.success(
+                "✅ **HIGH VALIDATION**\n\nAll historical pulse oximetry metrics fall cleanly inside real bounds (0-100%).")
+        else:
+            st.error(
+                f"❌ **INTEGRITY COMPROMISE**\n\nOut-of-bound SpO₂ rows registered: {bad_spo2}.")
+    with c3:
+        if bad_hr == 0:
+            st.success(
+                "✅ **HIGH VALIDATION**\n\nAll metrics evaluate within normal physiologic system scales (20-300 bpm).")
+        else:
+            st.error(
+                f"❌ **INTEGRITY COMPROMISE**\n\nOut-of-bound Heart Rate rows caught: {bad_hr}.")
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # 2. Historical Run Logs and Drift Side-by-Side
+    col_left, col_right = st.columns([4, 3])
+
+    with col_left:
+        st.subheader("📝 Recent Pipeline Audit Log Signatures")
+        try:
+            log_data = pd.read_sql(text("""
+                SELECT pipeline_name, status, records_read, records_loaded, run_at 
+                FROM etl_audit_log ORDER BY run_at DESC LIMIT 5
+            """), engine)
+            st.dataframe(log_data, use_container_width=True, hide_index=True)
+        except Exception:
+            st.info("Log reference cache currently building...")
+
+    with col_right:
+        st.subheader("📉 Statistical Metric Drift Summary")
+        from governance.drift_detection import detect_drift
+        try:
+            drift_map = detect_drift(engine)
+            if drift_map:
+                drift_records = []
+                for param, stats in drift_map.items():
+                    flag = "⚠️ DRIFTED" if stats['drifted'] else "✅ STABLE"
+                    drift_records.append({"Parameter": param.replace(
+                        '_', ' ').title(), "Status": flag, "KS p-value": stats['p_value']})
+                st.table(pd.DataFrame(drift_records))
+            else:
+                st.info("Computing metrics population distribution bounds...")
+        except Exception as e:
+            st.caption(
+                f"Waiting for metrics compilation execution stream profile: {e}")
 
 
 if __name__ == '__main__':

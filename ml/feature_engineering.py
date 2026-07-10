@@ -81,6 +81,12 @@ def build_features(engine) -> pd.DataFrame:
         'pulse_pressure': 47, 'shock_index': 0.63, 'resp_to_hr_ratio': 0.21,
     }
     df = df.fillna(DEFAULTS)
+
+    # --- FIX: Force all features to float so XGBoost doesn't crash ---
+    for col in FEATURE_COLS:
+        df[col] = df[col].astype(float)
+    # -----------------------------------------------------------------
+
     log.info(
         f"✅ Feature matrix: {len(df)} patients × {len(FEATURE_COLS)} features")
     return df

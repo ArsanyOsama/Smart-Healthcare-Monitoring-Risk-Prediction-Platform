@@ -23,7 +23,8 @@ import sys
 current_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.abspath(os.path.join(current_dir, '..'))
 sys.path.insert(0, project_root)
-
+sys.path.insert(0, os.path.abspath(
+    os.path.join(os.path.dirname(__file__), '..')))
 # 2. INTERNAL IMPORTS
 
 # 3. EXTERNAL IMPORTS
@@ -114,7 +115,7 @@ def train_and_save(db_url: str, model_path: str = 'ml/models/risk_model.pkl'):
     cv_results = cross_validate(model, X_df, y, cv=kf,
                                 scoring=[
                                     'recall_weighted', 'precision_weighted', 'f1_weighted', 'accuracy'],
-                                fit_params={'sample_weight': sample_weights})
+                                params={'sample_weight': sample_weights})  # type: ignore
 
     metrics = {
         'test_recall':    float(cv_results['test_recall_weighted'].mean()),
