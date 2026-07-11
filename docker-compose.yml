@@ -8,7 +8,7 @@
 #   docker compose down -v          # stop and wipe volumes
 # ─────────────────────────────────────────────────────────────
 
-version: '3.8'
+name: smart-healthcare-platform
 
 services:
 
