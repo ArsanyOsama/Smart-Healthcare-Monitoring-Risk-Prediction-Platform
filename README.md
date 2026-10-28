@@ -44,7 +44,7 @@ It integrates:
 | Ahmed Adel        | ML Engineer: Risk classification models, feature importance (SHAP), evaluation |
 | Noureldeen        | Backend & Streaming Engineer: Kafka/streaming simulation, API layer, alert engine |
 | Yahya Mohamed     | Frontend & BI Developer: Clinician dashboard, data visualization, UI/UX responsiveness |
-| Adel Assem        | QA & Data Governance: Data quality checks, system load testing, model/data drift monitoring |
+| Adel Assem        | QA & Data Governance: Data quality checks and monitoring, alongside BI dashboard development and data visualization |
 
 ---
 
